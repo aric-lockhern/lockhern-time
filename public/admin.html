@@ -54,6 +54,7 @@
     <button data-tab="team">Team</button>
     <button data-tab="clients">Clients</button>
     <button data-tab="assign">Assignments</button>
+    <button data-tab="settings">Settings</button>
   </nav>
 
   <section class="panel active" id="p-reports">
@@ -89,7 +90,7 @@
       </div>
     </div>
     <div class="card"><h2>Team &amp; personal links</h2>
-      <table><thead><tr><th>Name</th><th>Type</th><th>Hrs/wk</th><th>Personal link</th><th>Active</th></tr></thead>
+      <table><thead><tr><th>Name</th><th>Type</th><th>Hrs/wk</th><th>Email</th><th>Personal link</th><th>Active</th></tr></thead>
       <tbody id="teamRows"></tbody></table>
     </div>
   </section>
@@ -107,6 +108,35 @@
     <div class="card"><h2>Who works on each client</h2>
       <div class="sub" style="margin-bottom:12px">Tap names to assign. Saves instantly.</div>
       <div id="assignList"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="p-settings">
+    <div class="card">
+      <h2>Reminder emails</h2>
+      <div class="sub" style="margin-bottom:14px">Friday: nudge everyone to log hours. Monday: chase anyone who hasn\u2019t submitted, with you CC\u2019d. Each email links to that person\u2019s own timesheet.</div>
+      <table>
+        <tr><td style="width:220px"><b>Reminders enabled</b></td>
+          <td><select id="setEnabled"><option value="yes">On</option><option value="no">Off</option></select></td></tr>
+        <tr><td><b>App base URL</b><div class="sub">e.g. https://timetracking.lockherndigital.com</div></td>
+          <td><input id="setBase" style="min-width:340px" placeholder="https://timetracking.lockherndigital.com"></td></tr>
+        <tr><td><b>CC email (you)</b><div class="sub">CC\u2019d on every overdue chase</div></td>
+          <td><input id="setCc" style="min-width:280px" placeholder="aric@lockherndigital.com"></td></tr>
+        <tr><td><b>Friday send hour</b><div class="sub">0\u201323, your timezone</div></td>
+          <td><input id="setFriHour" class="sm" type="number" min="0" max="23" value="9"></td></tr>
+        <tr><td><b>Monday chase hour</b><div class="sub">0\u201323</div></td>
+          <td><input id="setMonHour" class="sm" type="number" min="0" max="23" value="10"></td></tr>
+        <tr><td><b>From name</b></td>
+          <td><input id="setFrom" style="min-width:240px" placeholder="Lockhern Digital"></td></tr>
+      </table>
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button class="act" id="setSave">Save settings</button>
+        <button class="act" id="setTest" style="background:#4a90a4">Send me a test email</button>
+        <span class="sub" id="setMsg"></span>
+      </div>
+      <div class="sub" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+        <b>One-time:</b> after saving, open Apps Script and run <code>installReminderTriggers</code> once to schedule the Friday + Monday sends. Re-run it if you change the send hours. Emails require each person to have an email on the Team tab.
+      </div>
     </div>
   </section>
 </div>
@@ -129,7 +159,7 @@
       if(!r||!r.ok){ document.getElementById('note').textContent='Failed to load'+(r&&r.detail?': '+r.detail:''); return; }
       DATA=r;
       document.getElementById('note').textContent='Live \u00b7 employee links use ?user=<slug> \u00b7 admin is /admin';
-      renderTeam(); renderClients(); renderAssign(); initReports(); initStatus();
+      renderTeam(); renderClients(); renderAssign(); initReports(); initStatus(); initSettings();
     }).catch(function(e){ document.getElementById('note').textContent='Load error: '+e; });
   }
 
@@ -152,15 +182,17 @@
       return '<tr><td>'+esc(t.name)+'</td>'+
         '<td><select data-id="'+t.id+'" class="tType">'+opt('full','Full-time',t.type)+opt('free','Freelancer',t.type)+'</select></td>'+
         '<td><input class="sm tHrs" data-id="'+t.id+'" type="number" value="'+(t.weeklyHours||0)+'"></td>'+
+        '<td><input class="tEmail" data-id="'+t.id+'" type="email" value="'+esc(t.email||'')+'" placeholder="name@\u2026" style="min-width:180px"></td>'+
         '<td class="copybox"><code>'+esc(link)+'</code><button class="link" data-link="'+esc(link)+'">Copy</button></td>'+
         '<td><input type="checkbox" class="tActive" data-id="'+t.id+'" '+(t.active!==false?'checked':'')+'></td></tr>';
     }
-    function head(l,n){return '<tr class="secthead"><td colspan="5">'+esc(l)+' ('+n+')</td></tr>';}
-    var html=head('Full-time',full.length)+(full.length?full.map(rowHtml).join(''):'<tr><td colspan="5" class="muted">None</td></tr>');
-    html+=head('Freelancers',free.length)+(free.length?free.map(rowHtml).join(''):'<tr><td colspan="5" class="muted">None</td></tr>');
+    function head(l,n){return '<tr class="secthead"><td colspan="6">'+esc(l)+' ('+n+')</td></tr>';}
+    var html=head('Full-time',full.length)+(full.length?full.map(rowHtml).join(''):'<tr><td colspan="6" class="muted">None</td></tr>');
+    html+=head('Freelancers',free.length)+(free.length?free.map(rowHtml).join(''):'<tr><td colspan="6" class="muted">None</td></tr>');
     document.getElementById('teamRows').innerHTML=html;
     wire('.tType','change',function(el){ updateMember(el.getAttribute('data-id'),{type:el.value},true); });
     wire('.tHrs','change',function(el){ updateMember(el.getAttribute('data-id'),{weeklyHours:parseFloat(el.value)||0}); });
+    wire('.tEmail','change',function(el){ updateMember(el.getAttribute('data-id'),{email:el.value.trim()}); });
     wire('.tActive','change',function(el){ updateMember(el.getAttribute('data-id'),{active:el.checked}); });
     wire('[data-link]','click',function(el){ copy(el.getAttribute('data-link')); });
   }
@@ -228,6 +260,44 @@
       return '<tr style="background:'+(x.submitted?'#f1f8f2':'#fdf3f2')+'"><td>'+esc(x.name)+'</td><td>'+badge+'</td><td class="muted">'+esc(x.at||'')+'</td></tr>';
     }).join('');
   }
+
+  // ---- settings ----
+  function initSettings(){
+    var s=DATA.settings||{};
+    document.getElementById('setEnabled').value = s.remindersEnabled===false?'no':'yes';
+    document.getElementById('setBase').value = s.appBaseUrl||SITE;
+    document.getElementById('setCc').value = s.ccEmail||'';
+    document.getElementById('setFriHour').value = (s.fridayHour!=null&&!isNaN(s.fridayHour))?s.fridayHour:9;
+    document.getElementById('setMonHour').value = (s.mondayHour!=null&&!isNaN(s.mondayHour))?s.mondayHour:10;
+    document.getElementById('setFrom').value = s.fromName||'Lockhern Digital';
+
+    document.getElementById('setSave').addEventListener('click',function(){
+      var patch={
+        remindersEnabled: document.getElementById('setEnabled').value,
+        appBaseUrl: val('setBase'),
+        ccEmail: val('setCc'),
+        fridayHour: String(parseInt(document.getElementById('setFriHour').value,10)),
+        mondayHour: String(parseInt(document.getElementById('setMonHour').value,10)),
+        fromName: val('setFrom')
+      };
+      setMsg('Saving…');
+      apiPost({action:'saveSettings',patch:patch}).then(function(r){
+        if(r&&r.ok){ DATA.settings=r.settings; setMsg('Saved \u2713'); }
+        else setMsg('Save failed'+(r&&r.detail?': '+r.detail:''));
+      }).catch(function(e){ setMsg('Save failed: '+e); });
+    });
+
+    document.getElementById('setTest').addEventListener('click',function(){
+      // Test to the first full-time person's slug if present, else whatever exists.
+      var anyone=(DATA.team&&DATA.team[0])?DATA.team[0].slug:'aric';
+      setMsg('Sending test…');
+      api('sendTest',{slug:anyone}).then(function(r){
+        if(r&&r.ok) setMsg('Test sent to '+r.sentTo+' \u2713');
+        else setMsg('Test failed: '+((r&&r.error)||'unknown')+' (set base URL + an email first)');
+      }).catch(function(e){ setMsg('Test failed: '+e); });
+    });
+  }
+  function setMsg(t){ document.getElementById('setMsg').textContent=t; }
 
   // ---- reports ----
   function initReports(){
