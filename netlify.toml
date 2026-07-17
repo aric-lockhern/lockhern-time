@@ -1,0 +1,20 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[build.environment]
+  # Node 18+ guarantees a global fetch() in the function runtime.
+  NODE_VERSION = "18"
+
+# Let the pages keep calling /api/proxy — route it to the function.
+[[redirects]]
+  from = "/api/proxy"
+  to = "/.netlify/functions/proxy"
+  status = 200
+  force = true
+
+# Clean /admin URL → admin.html
+[[redirects]]
+  from = "/admin"
+  to = "/admin.html"
+  status = 200
