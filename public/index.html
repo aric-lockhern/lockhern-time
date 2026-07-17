@@ -108,8 +108,14 @@
     document.getElementById('card').innerHTML =
       '<div class="weekbar"><label>Week ending</label><select id="weekSel">'+weekOpts+'</select>'+
         '<span class="sub" id="submitState"></span></div>'+rows+
-      '<div class="totals"><div><div class="cap">Client hours logged</div>'+
-        '<div class="big" id="totalNum">0.0</div><div class="bar"><i id="capBar" style="width:0%"></i></div>'+
+      '<div class="totals"><div style="width:100%">'+
+        '<div style="display:flex;justify-content:space-between;align-items:baseline">'+
+          '<div class="cap">Client hours <span id="clientNum" style="font-weight:700;color:var(--ink)">0.0</span></div>'+
+          '<div class="cap">Total logged</div></div>'+
+        '<div style="display:flex;justify-content:space-between;align-items:baseline">'+
+          '<div class="cap" id="internalNote"></div>'+
+          '<div class="big" id="totalNum">0.0</div></div>'+
+        '<div class="bar"><i id="capBar" style="width:0%"></i></div>'+
         '<div class="cap" id="capText"></div></div></div>';
 
     setSubmitBadge();
@@ -127,14 +133,18 @@
   }
 
   function recalc(){
-    var t=0;
+    var client=0, internal=0;
     Array.prototype.forEach.call(document.querySelectorAll('.hinput'),function(i){
-      var id=i.getAttribute('data-id'); var v=parseFloat(i.value)||0; if(id!=='internal')t+=v;
+      var id=i.getAttribute('data-id'); var v=parseFloat(i.value)||0;
+      if(id==='internal') internal+=v; else client+=v;   // ad hoc counts as client work
     });
-    document.getElementById('totalNum').textContent=t.toFixed(1);
-    var cap=Number(STATE.user.weeklyHours)||0; var pct=cap>0?Math.round(t/cap*100):0;
+    var total=client+internal;
+    document.getElementById('clientNum').textContent=client.toFixed(1);
+    document.getElementById('totalNum').textContent=total.toFixed(1);
+    document.getElementById('internalNote').textContent = internal>0 ? ('+ '+internal.toFixed(1)+' internal') : '';
+    var cap=Number(STATE.user.weeklyHours)||0; var pct=cap>0?Math.round(total/cap*100):0;
     var bar=document.getElementById('capBar'); bar.style.width=Math.min(100,pct)+'%'; bar.className=pct>100?'over':'';
-    document.getElementById('capText').textContent=cap>0?pct+'% of your '+cap+'-hr weekly capacity':'';
+    document.getElementById('capText').textContent=cap>0?pct+'% of your '+cap+'-hr weekly capacity (total)':'';
   }
 
   function save(){
