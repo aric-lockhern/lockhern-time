@@ -182,7 +182,8 @@
       return '<tr><td>'+esc(t.name)+'</td>'+
         '<td><select data-id="'+t.id+'" class="tType">'+opt('full','Full-time',t.type)+opt('free','Freelancer',t.type)+'</select></td>'+
         '<td><input class="sm tHrs" data-id="'+t.id+'" type="number" value="'+(t.weeklyHours||0)+'"></td>'+
-        '<td><input class="tEmail" data-id="'+t.id+'" type="email" value="'+esc(t.email||'')+'" placeholder="name@\u2026" style="min-width:180px"></td>'+
+        '<td><input class="tEmail" data-id="'+t.id+'" type="email" value="'+esc(t.email||'')+'" placeholder="name@\u2026" style="min-width:170px">'+
+          '<button class="link tWelcome" data-slug="'+t.slug+'" title="Send welcome email" style="margin-left:4px">Welcome</button></td>'+
         '<td class="copybox"><code>'+esc(link)+'</code><button class="link" data-link="'+esc(link)+'">Copy</button></td>'+
         '<td><input type="checkbox" class="tActive" data-id="'+t.id+'" '+(t.active!==false?'checked':'')+'></td></tr>';
     }
@@ -194,6 +195,17 @@
     wire('.tHrs','change',function(el){ updateMember(el.getAttribute('data-id'),{weeklyHours:parseFloat(el.value)||0}); });
     wire('.tEmail','change',function(el){ updateMember(el.getAttribute('data-id'),{email:el.value.trim()}); });
     wire('.tActive','change',function(el){ updateMember(el.getAttribute('data-id'),{active:el.checked}); });
+    wire('.tWelcome','click',function(el){
+      var slug=el.getAttribute('data-slug');
+      if(!confirm('Send the welcome email to this person now?'))return;
+      toast('Sending welcome…');
+      api('sendWelcome',{slug:slug}).then(function(r){
+        if(r&&r.ok) toast('Welcome sent to '+r.sentTo);
+        else if(r&&r.error==='no_email') toast('Add an email first, then Welcome.');
+        else if(r&&r.error==='no_base_url') toast('Set the app base URL in Settings first.');
+        else toast('Send failed'+((r&&r.error)?': '+r.error:''));
+      }).catch(function(e){ toast('Send failed: '+e); });
+    });
     wire('[data-link]','click',function(el){ copy(el.getAttribute('data-link')); });
   }
   document.getElementById('tAdd').addEventListener('click',function(){
