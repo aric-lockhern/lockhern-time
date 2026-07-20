@@ -325,7 +325,12 @@
   }
   function onScope(){
     var scope=document.getElementById('scopeSel').value; var ps=document.getElementById('periodSel');
-    if(scope==='week'){ ps.innerHTML=DATA.weeks.map(function(w){return '<option value="'+w+'">'+w+'</option>';}).join(''); refreshReport(); }
+    if(scope==='week'){
+      ps.innerHTML=DATA.weeks.map(function(w){return '<option value="'+w+'">'+w+'</option>';}).join('');
+      // Default to the previous completed week (index 1), not the current in-progress one.
+      if(DATA.weeks.length>1) ps.value=DATA.weeks[1];
+      refreshReport();
+    }
     else { api('adminMonths').then(function(res){ var months=(res&&res.months)||[]; ps.innerHTML=months.map(function(m){return '<option value="'+m+'">'+m+'</option>';}).join(''); refreshReport(); }); }
   }
   function refreshReport(){
