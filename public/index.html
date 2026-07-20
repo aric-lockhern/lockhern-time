@@ -106,6 +106,10 @@
     }).join('');
 
     document.getElementById('card').innerHTML =
+      '<div style="padding:12px 16px;background:#f4f7f5;border-bottom:1px solid var(--line);font-size:13px;color:#3a5a4a;line-height:1.5">' +
+        'Enter your <b>total hours per client for the week</b> (one entry, not per day), then hit <b>Save week</b>. ' +
+        'Missing a client or need one removed? <b>Message Aric.</b>' +
+      '</div>' +
       '<div class="weekbar"><label>Week ending</label><select id="weekSel">'+weekOpts+'</select>'+
         '<span class="sub" id="submitState"></span></div>'+rows+
       '<div class="totals"><div style="width:100%">'+
