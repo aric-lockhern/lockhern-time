@@ -42,6 +42,9 @@
   .toast.show{opacity:1;}
   canvas{max-height:320px;}
   .secthead td{background:#eef1f4;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#5f6368;padding:8px 8px;}
+  .bar{height:8px;border-radius:99px;background:#e4e7eb;overflow:hidden;}
+  .bar>i{display:block;height:100%;background:var(--accent);}
+  #workloadRows .wrow:hover td{background:#f4f7f5;}
 </style>
 </head>
 <body>
@@ -50,6 +53,7 @@
   <div class="sub" id="note">Loading…</div>
   <nav class="tabs">
     <button data-tab="reports" class="active">Reports</button>
+    <button data-tab="workload">Workload</button>
     <button data-tab="status">Submissions</button>
     <button data-tab="team">Team</button>
     <button data-tab="clients">Clients</button>
@@ -71,6 +75,21 @@
     <div class="grid2">
       <div class="card"><h2>Hours by client</h2><canvas id="pie"></canvas></div>
       <div class="card"><h2>Capacity — logged vs available</h2><canvas id="cap"></canvas></div>
+    </div>
+  </section>
+
+  <section class="panel" id="p-workload">
+    <div class="card">
+      <h2>Accounts per person</h2>
+      <div class="sub" style="margin-bottom:12px">How many active clients each person is assigned to. Click a row to see their client list.</div>
+      <table>
+        <thead><tr>
+          <th class="wsort" data-k="name" style="cursor:pointer">Person &#8597;</th>
+          <th class="wsort" data-k="count" style="cursor:pointer">Accounts &#8597;</th>
+          <th>Share of workload</th>
+        </tr></thead>
+        <tbody id="workloadRows"></tbody>
+      </table>
     </div>
   </section>
 
@@ -159,7 +178,7 @@
       if(!r||!r.ok){ document.getElementById('note').textContent='Failed to load'+(r&&r.detail?': '+r.detail:''); return; }
       DATA=r;
       document.getElementById('note').textContent='Live \u00b7 employee links use ?user=<slug> \u00b7 admin is /admin';
-      renderTeam(); renderClients(); renderAssign(); initReports(); initStatus(); initSettings();
+      renderTeam(); renderClients(); renderAssign(); initReports(); initStatus(); initSettings(); renderWorkload();
     }).catch(function(e){ document.getElementById('note').textContent='Load error: '+e; });
   }
 
@@ -272,6 +291,63 @@
       return '<tr style="background:'+(x.submitted?'#f1f8f2':'#fdf3f2')+'"><td>'+esc(x.name)+'</td><td>'+badge+'</td><td class="muted">'+esc(x.at||'')+'</td></tr>';
     }).join('');
   }
+
+  // ---- workload ----
+  var workloadSort = {k:'count', dir:-1};   // default: most accounts first
+  function renderWorkload(){
+    var activeClients = {};
+    DATA.clients.forEach(function(c){ if(c.active!==false) activeClients[String(c.id)]=c.name; });
+
+    // Build per-person assigned client list (active clients only).
+    var people = DATA.team.filter(function(t){return t.active!==false;}).map(function(t){
+      var clientNames = DATA.assignments
+        .filter(function(a){ return String(a.userId)===String(t.id) && activeClients[String(a.clientId)]; })
+        .map(function(a){ return activeClients[String(a.clientId)]; })
+        .sort(function(a,b){ return String(a).localeCompare(String(b)); });
+      return {id:t.id, name:t.name, type:t.type, clients:clientNames, count:clientNames.length};
+    });
+
+    var maxCount = people.reduce(function(m,p){ return Math.max(m,p.count); }, 0) || 1;
+
+    people.sort(function(a,b){
+      var k=workloadSort.k, dir=workloadSort.dir;
+      if(k==='name') return dir*String(a.name).localeCompare(String(b.name));
+      if(a.count!==b.count) return dir*(a.count-b.count);
+      return String(a.name).localeCompare(String(b.name));   // tiebreak
+    });
+
+    document.getElementById('workloadRows').innerHTML = people.map(function(p){
+      var pct = Math.round(p.count/maxCount*100);
+      var chips = p.clients.length
+        ? p.clients.map(function(n){return '<span class="pill">'+esc(n)+'</span>';}).join('')
+        : '<span class="muted">No active accounts assigned</span>';
+      return '<tr class="wrow" data-id="'+p.id+'" style="cursor:pointer">'+
+          '<td>'+esc(p.name)+(p.type==='free'?' <span class="muted" style="font-size:11px">(freelancer)</span>':'')+'</td>'+
+          '<td style="font-variant-numeric:tabular-nums;font-weight:600">'+p.count+'</td>'+
+          '<td style="min-width:180px"><div class="bar" style="margin:0"><i style="width:'+pct+'%"></i></div></td>'+
+        '</tr>'+
+        '<tr class="wdetail" data-for="'+p.id+'" style="display:none"><td colspan="3" style="background:#fafbfc">'+
+          '<div style="padding:4px 0 8px"><div class="assignwrap">'+chips+'</div></div></td></tr>';
+    }).join('');
+
+    // Row click → toggle the detail row
+    document.querySelectorAll('#workloadRows .wrow').forEach(function(row){
+      row.addEventListener('click',function(){
+        var id=row.getAttribute('data-id');
+        var d=document.querySelector('#workloadRows .wdetail[data-for="'+id+'"]');
+        if(d) d.style.display = (d.style.display==='none'?'table-row':'none');
+      });
+    });
+  }
+  // Header sort
+  document.querySelectorAll('.wsort').forEach(function(th){
+    th.addEventListener('click',function(){
+      var k=th.getAttribute('data-k');
+      if(workloadSort.k===k) workloadSort.dir*=-1;
+      else { workloadSort.k=k; workloadSort.dir = (k==='name'?1:-1); }
+      renderWorkload();
+    });
+  });
 
   // ---- settings ----
   function initSettings(){
