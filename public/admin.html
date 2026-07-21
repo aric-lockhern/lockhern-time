@@ -423,10 +423,29 @@
     var labels=top.map(function(x){return x.label;}); var vals=top.map(function(x){return x.hours;});
     if(others>0){labels.push('Other');vals.push(Math.round(others*10)/10);}
     var palette=genColors(labels.length);
+    var pieTotal=vals.reduce(function(s,v){return s+v;},0)||1;
     if(pieChart)pieChart.destroy();
     pieChart=new Chart(document.getElementById('pie'),{type:'doughnut',
       data:{labels:labels,datasets:[{data:vals,backgroundColor:palette,borderWidth:1,borderColor:'#fff'}]},
-      options:{plugins:{legend:{position:'right',labels:{boxWidth:12,font:{size:11}}}},cutout:'58%',animation:{duration:300}}});
+      options:{plugins:{legend:{position:'right',labels:{boxWidth:12,font:{size:11},
+        generateLabels:function(chart){
+          var d=chart.data; var ds=d.datasets[0];
+          return d.labels.map(function(lab,i){
+            var val=ds.data[i]||0; var pct=Math.round(val/pieTotal*100);
+            return {
+              text: lab+' ('+pct+'%)',
+              fillStyle: ds.backgroundColor[i],
+              strokeStyle: '#fff', lineWidth: 1,
+              index: i,
+              hidden: !chart.getDataVisibility(i)
+            };
+          });
+        }
+      }},
+      tooltip:{callbacks:{label:function(ctx){
+        var val=ctx.parsed||0; var pct=Math.round(val/pieTotal*100);
+        return ' '+ctx.label+': '+val+' hrs ('+pct+'%)';
+      }}}},cutout:'58%',animation:{duration:300}}});
     var cap=r.capacity.slice().sort(function(a,b){return b.util-a.util;});
     if(capChart)capChart.destroy();
     capChart=new Chart(document.getElementById('cap'),{type:'bar',
