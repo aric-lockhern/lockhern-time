@@ -1,0 +1,742 @@
+/**
+ * ============================================================
+ *  LOCKHERN TIME TRACKER — API backend (for the Netlify front-end)
+ * ------------------------------------------------------------
+ *  JSON-only API. The Netlify-hosted pages (public/index.html and
+ *  public/admin.html) call it through /api/proxy, which injects the
+ *  shared secret and forwards the request here.
+ *
+ *  DAILY LOGGING (2026 update)
+ *  ---------------------------
+ *  Hours are now stored PER CLIENT PER DAY. The Entries sheet gains a
+ *  `date` column (added automatically on first run — existing rows are
+ *  left untouched and treated as a whole-week total under that week's
+ *  Friday). Saving a timesheet is now a DRAFT (empSave) and does NOT
+ *  mark the week submitted; a separate empSubmit marks it submitted.
+ *  Weeks stay editable after submitting (re-submit updates the stamp).
+ *
+ *  SETUP
+ *   1. Script Properties > API_SECRET = <a long random string>
+ *      (or run setSecret_() once with your value).
+ *   2. Deploy > New deployment > Web app.
+ *        Execute as: Me.   Who has access: Anyone.
+ *      Copy the /exec URL.
+ *   3. Put the /exec URL (GAS_URL) and the same secret (API_SECRET)
+ *      into the Netlify site's environment variables.
+ *
+ *  Every request must include the secret as ?key=... (GET) or in the
+ *  JSON body (POST). Requests without the right key are rejected.
+ * ============================================================
+ */
+
+var DB = {
+  CLIENTS: 'Clients',
+  TEAM: 'Team',
+  ASSIGN: 'Assignments',
+  ENTRIES: 'Entries',
+  SETTINGS: 'Settings'   // key | value — reminder config lives here
+};
+var DEFAULT_FT_HOURS = 40;
+var SUBMIT_MARKER = '__submitted__';   // sentinel clientId marking an explicit submission
+var ENTRIES_HEADER = ['id', 'userId', 'weekEnding', 'clientId', 'hours', 'updatedAt', 'date'];
+
+// ---- Settings (reminder config), stored on a "Settings" tab as key/value rows ----
+function ensureSettings_(ss) {
+  var sh = ss.getSheetByName(DB.SETTINGS);
+  if (!sh) {
+    sh = ss.insertSheet(DB.SETTINGS);
+    sh.getRange(1, 1, 1, 2).setValues([['key', 'value']]).setFontWeight('bold');
+    var defaults = [
+      ['remindersEnabled', 'yes'],
+      ['ccEmail', ''],
+      ['appBaseUrl', ''],          // e.g. https://timetracking.lockherndigital.com
+      ['fridayHour', '9'],         // 0-23, Friday nudge to everyone
+      ['mondayHour', '10'],        // 0-23, Monday chase to overdue
+      ['fromName', 'Lockhern Digital']
+    ];
+    sh.getRange(2, 1, defaults.length, 2).setValues(defaults);
+  }
+  return sh;
+}
+function getSettings_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ensureSettings_(ss);
+  var v = sh.getRange(1, 1, sh.getLastRow(), 2).getValues();
+  var m = {};
+  for (var i = 1; i < v.length; i++) if (v[i][0]) m[String(v[i][0])] = v[i][1];
+  return {
+    remindersEnabled: String(m.remindersEnabled || 'yes').toLowerCase() === 'yes',
+    ccEmail: String(m.ccEmail || '').trim(),
+    appBaseUrl: String(m.appBaseUrl || '').trim().replace(/\/+$/, ''),
+    fridayHour: parseInt(m.fridayHour, 10),
+    mondayHour: parseInt(m.mondayHour, 10),
+    fromName: String(m.fromName || 'Lockhern Digital').trim()
+  };
+}
+function saveSettings_(patch) {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ensureSettings_(ss);
+  var v = sh.getRange(1, 1, sh.getLastRow(), 2).getValues();
+  var rowByKey = {};
+  for (var i = 1; i < v.length; i++) if (v[i][0]) rowByKey[String(v[i][0])] = i + 1;
+  Object.keys(patch).forEach(function (k) {
+    if (rowByKey[k]) sh.getRange(rowByKey[k], 2).setValue(patch[k]);
+    else sh.appendRow([k, patch[k]]);
+  });
+  return getSettings_();
+}
+
+// ---- Entries schema: ensure the sheet + the `date` column exist. Idempotent. ----
+function ensureEntriesSchema_(ss) {
+  var sh = ss.getSheetByName(DB.ENTRIES);
+  if (!sh) {
+    sh = ss.insertSheet(DB.ENTRIES);
+    sh.getRange(1, 1, 1, ENTRIES_HEADER.length).setValues([ENTRIES_HEADER]).setFontWeight('bold');
+    return sh;
+  }
+  if (sh.getLastRow() < 1 || sh.getLastColumn() < 1) {
+    sh.getRange(1, 1, 1, ENTRIES_HEADER.length).setValues([ENTRIES_HEADER]).setFontWeight('bold');
+    return sh;
+  }
+  var lastCol = sh.getLastColumn();
+  var have = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (x) { return String(x); });
+  if (have.indexOf('date') < 0) {
+    sh.getRange(1, lastCol + 1).setValue('date');
+  }
+  return sh;
+}
+
+// ---- one-time helper to set the secret from the editor ----
+function setSecret_() {
+  PropertiesService.getScriptProperties().setProperty('API_SECRET', 'CHANGE_ME_to_a_long_random_string');
+}
+function getSecret_() {
+  return PropertiesService.getScriptProperties().getProperty('API_SECRET') || '';
+}
+
+// ============================================================
+//  ROUTING  — everything comes in as ?action=...
+// ============================================================
+function doGet(e) {
+  return handle_(e, (e && e.parameter) || {});
+}
+function doPost(e) {
+  var body = {};
+  try { body = JSON.parse(e.postData.contents); } catch (err) { body = (e && e.parameter) || {}; }
+  return handle_(e, body);
+}
+
+function handle_(e, p) {
+  // Auth
+  var provided = String(p.key || '');
+  if (!getSecret_() || provided !== getSecret_()) {
+    return json_({ok: false, error: 'unauthorized'});
+  }
+  var action = String(p.action || '');
+  try {
+    ensureEntriesSchema_(SpreadsheetApp.getActive());
+    switch (action) {
+      case 'empLoad':   return json_(empLoad(p.slug, p.week || null));
+      case 'empSave':   return json_(empSave(p.slug, p.week, p.days || {}));
+      case 'empSubmit': return json_(empSubmit(p.slug, p.week, p.days || null));
+      case 'adminLoad': return json_(adminLoad());
+      case 'adminReport': return json_(adminReport(p.period, p.scope, p.userId));
+      case 'adminMonths': return json_({ok: true, months: adminMonths()});
+      case 'adminStatus': return json_(adminSubmissionStatus(p.week));
+      case 'addClient': return json_(adminAddClient(p.name));
+      case 'toggleClient': return json_(adminToggleClient(p.id, p.active));
+      case 'addMember': return json_(adminAddMember(p.name, p.type, p.weeklyHours, p.email));
+      case 'updateMember': return json_(adminUpdateMember(p.id, p.patch || {}));
+      case 'setAssignments': return json_(adminSetAssignments(p.clientId, p.userIds || []));
+      case 'loadSettings': return json_({ok: true, settings: getSettings_()});
+      case 'saveSettings': return json_(adminSaveSettings(p.patch || {}));
+      case 'sendTest': return json_(adminSendTest(p.slug));
+      case 'sendWelcome': return json_(adminSendWelcome(p.slug));
+      default: return json_({ok: false, error: 'unknown_action', action: action});
+    }
+  } catch (err) {
+    return json_({ok: false, error: 'server_error', detail: String(err && err.message || err)});
+  }
+}
+
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// ============================================================
+//  EMPLOYEE
+// ============================================================
+function empLoad(slug, week) {
+  var ss = SpreadsheetApp.getActive();
+  var user = teamBySlug_(ss, slug);
+  if (!user) return {ok: false, error: 'unknown_user'};
+
+  var wk = week || fridayOf_(new Date());
+  var assignedIds = assignmentsFor_(ss, user.id);
+  var clients = rows_(ss, DB.CLIENTS)
+    .filter(function (c) { return c.active !== false && assignedIds[c.id]; })
+    .map(function (c) { return {id: c.id, name: c.name}; });
+  clients.sort(function (a, b) { return a.name.localeCompare(b.name); });
+  clients.push({id: 'internal', name: 'Internal'});
+  clients.push({id: 'adhoc', name: 'Ad hoc support (stepped in on a client you don’t own)'});
+
+  return {
+    ok: true,
+    user: {name: user.name, slug: user.slug, weeklyHours: user.weeklyHours, type: user.type},
+    week: wk,
+    weeks: recentFridays_(10),
+    clients: clients,
+    hours: entriesFor_(ss, user.id, wk),   // { clientId: { 'yyyy-mm-dd': hours } }
+    submitted: isSubmitted_(ss, user.id, wk)
+  };
+}
+
+/** Submitted = an explicit submission marker exists for this user + week. */
+function isSubmitted_(ss, userId, week) {
+  var sh = ss.getSheetByName(DB.ENTRIES);
+  if (!sh || sh.getLastRow() < 2) return false;
+  var uid = String(userId), wk = weekStr_(week);
+  var data = sh.getDataRange().getValues();
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][1]) === uid && weekStr_(data[r][2]) === wk && String(data[r][3]) === SUBMIT_MARKER) return true;
+  }
+  return false;
+}
+
+/**
+ * Draft save. Upserts hours per (client, day). Does NOT submit.
+ * days = { clientId: { 'yyyy-mm-dd': hours } }
+ */
+function empSave(slug, weekEnding, days) {
+  var ss = SpreadsheetApp.getActive();
+  var user = teamBySlug_(ss, slug);
+  if (!user) return {ok: false, error: 'unknown_user'};
+  var wk = String(weekEnding).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(wk)) return {ok: false, error: 'bad_week'};
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = ensureEntriesSchema_(ss);
+    var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
+    writeDays_(sh, user, wk, days || {}, stamp);
+    return {ok: true, savedAt: stamp, submitted: isSubmitted_(ss, user.id, wk)};
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Explicit submit. Optionally saves the latest cells first, then marks the week submitted. */
+function empSubmit(slug, weekEnding, days) {
+  var ss = SpreadsheetApp.getActive();
+  var user = teamBySlug_(ss, slug);
+  if (!user) return {ok: false, error: 'unknown_user'};
+  var wk = String(weekEnding).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(wk)) return {ok: false, error: 'bad_week'};
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = ensureEntriesSchema_(ss);
+    var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
+    if (days) writeDays_(sh, user, wk, days, stamp);
+    setSubmitted_(sh, String(user.id), wk, stamp);
+    return {ok: true, savedAt: stamp, submitted: true};
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Shared upsert used by empSave/empSubmit. No lock (callers hold it).
+ * Migrates any legacy dateless rows for this user+week onto the week's Friday
+ * so they upsert cleanly and never double-count.
+ */
+function writeDays_(sh, user, wk, days, stamp) {
+  var data = sh.getDataRange().getValues();
+  var uid = String(user.id);
+  var idx = {};   // 'clientId|date' -> 0-based row index in data
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][1]) !== uid) continue;
+    if (weekStr_(data[r][2]) !== wk) continue;
+    var cid = String(data[r][3]);
+    if (cid === SUBMIT_MARKER) continue;
+    var dcell = data[r][6];
+    var dstr = dcell ? weekStr_(dcell) : '';
+    if (!dstr) {                       // legacy total -> pin to Friday, in place
+      dstr = wk;
+      sh.getRange(r + 1, 7).setValue(wk);
+      data[r][6] = wk;
+    }
+    idx[cid + '|' + dstr] = r;
+  }
+
+  var appends = [];
+  Object.keys(days).forEach(function (cid) {
+    var perDay = days[cid] || {};
+    Object.keys(perDay).forEach(function (date) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;   // ignore malformed dates
+      var h = parseFloat(perDay[date]);
+      if (isNaN(h) || h < 0) h = 0;
+      var key = cid + '|' + date;
+      if (idx.hasOwnProperty(key)) {
+        var rr = idx[key];
+        sh.getRange(rr + 1, 5).setValue(h);
+        sh.getRange(rr + 1, 6).setValue(stamp);
+      } else if (h > 0) {
+        appends.push([Utilities.getUuid(), uid, wk, cid, h, stamp, date]);
+      }
+    });
+  });
+  if (appends.length) sh.getRange(sh.getLastRow() + 1, 1, appends.length, ENTRIES_HEADER.length).setValues(appends);
+}
+
+/** Create or refresh the submission marker row for a user+week. */
+function setSubmitted_(sh, uid, wk, stamp) {
+  var data = sh.getDataRange().getValues();
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][1]) === uid && weekStr_(data[r][2]) === wk && String(data[r][3]) === SUBMIT_MARKER) {
+      sh.getRange(r + 1, 6).setValue(stamp);
+      return;
+    }
+  }
+  sh.appendRow([Utilities.getUuid(), uid, wk, SUBMIT_MARKER, 1, stamp, '']);
+}
+
+// ============================================================
+//  ADMIN
+// ============================================================
+function adminLoad() {
+  var ss = SpreadsheetApp.getActive();
+  return {
+    ok: true,
+    clients: rows_(ss, DB.CLIENTS),
+    team: rows_(ss, DB.TEAM),
+    assignments: rows_(ss, DB.ASSIGN),
+    weeks: recentFridays_(12),
+    statusWeek: fridayOf_(new Date()),
+    status: adminSubmissionStatus(fridayOf_(new Date())),
+    settings: getSettings_()
+  };
+}
+
+function adminAddClient(name) {
+  var ss = SpreadsheetApp.getActive();
+  if (!String(name).trim()) return {ok: false, error: 'empty'};
+  addClient_(ss, String(name).trim());
+  return adminLoad();
+}
+function adminToggleClient(id, active) {
+  update_(SpreadsheetApp.getActive(), DB.CLIENTS, id, {active: !!active});
+  return adminLoad();
+}
+function adminAddMember(name, type, weeklyHours, email) {
+  var ss = SpreadsheetApp.getActive();
+  if (!String(name).trim()) return {ok: false, error: 'empty'};
+  var wh = parseFloat(weeklyHours) || (type === 'full' ? DEFAULT_FT_HOURS : 0);
+  addTeam_(ss, String(name).trim(), String(email || '').trim(), type || 'full', wh);
+  return adminLoad();
+}
+function adminUpdateMember(id, patch) {
+  update_(SpreadsheetApp.getActive(), DB.TEAM, id, patch);
+  return adminLoad();
+}
+function adminSetAssignments(clientId, userIds) {
+  var ss = SpreadsheetApp.getActive();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = ss.getSheetByName(DB.ASSIGN);
+    var data = sh.getDataRange().getValues();
+    for (var r = data.length - 1; r >= 1; r--) {
+      if (String(data[r][0]) === clientId) sh.deleteRow(r + 1);
+    }
+    if (userIds && userIds.length) {
+      var add = userIds.map(function (u) { return [clientId, u]; });
+      sh.getRange(sh.getLastRow() + 1, 1, add.length, 2).setValues(add);
+    }
+    return adminLoad();
+  } finally { lock.releaseLock(); }
+}
+
+// ============================================================
+//  SETTINGS + REMINDER EMAILS
+// ============================================================
+function adminSaveSettings(patch) {
+  // Only allow known keys through.
+  var allow = ['remindersEnabled','ccEmail','appBaseUrl','fridayHour','mondayHour','fromName'];
+  var clean = {};
+  allow.forEach(function (k) { if (patch.hasOwnProperty(k)) clean[k] = patch[k]; });
+  var s = saveSettings_(clean);
+  return {ok: true, settings: s};
+}
+
+/** Build a person's personal timesheet link from the configured base URL. */
+function personLink_(base, slug) {
+  if (!base) return '';
+  return base + '/?user=' + encodeURIComponent(slug);
+}
+
+/** Shared: who is on the active roster, with email + slug. */
+function activeTeamWithEmail_() {
+  var ss = SpreadsheetApp.getActive();
+  return rows_(ss, DB.TEAM)
+    .filter(function (t) { return t.active !== false; })
+    .map(function (t) { return {name: t.name, slug: t.slug, email: String(t.email || '').trim(), id: t.id}; });
+}
+
+/** FRIDAY: nudge everyone to fill in their hours, each linked to their own page. */
+function sendFridayReminders() {
+  var s = getSettings_();
+  if (!s.remindersEnabled) return;
+  if (!s.appBaseUrl) { Logger.log('No appBaseUrl set; skipping Friday reminders.'); return; }
+
+  var week = fridayOf_(new Date());
+  var team = activeTeamWithEmail_();
+  team.forEach(function (p) {
+    if (!p.email) return;   // no address, skip
+    var link = personLink_(s.appBaseUrl, p.slug);
+    MailApp.sendEmail({
+      to: p.email,
+      name: s.fromName,
+      subject: s.fromName + ' — log your hours (week ending ' + week + ')',
+      htmlBody:
+        '<p>Hi ' + esc_(p.name) + ',</p>' +
+        '<p>Please log your hours for the week ending <b>' + week + '</b>. You can enter time <b>day by day</b> and <b>Save draft</b> as you go — then hit <b>Submit week</b> once the week is done.</p>' +
+        '<p><a href="' + link + '" style="display:inline-block;background:#2f6f4f;color:#fff;' +
+        'padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Open your timesheet</a></p>' +
+        '<p style="color:#6b7580;font-size:13px">Or paste this link: ' + link + '</p>' +
+        '<p style="color:#6b7580;font-size:13px">Missing a client, or need one removed from your list? Just message Aric.</p>'
+    });
+  });
+}
+
+/** MONDAY: chase anyone who has NOT submitted the just-ended week. CC the admin per email. */
+function sendMondayChase() {
+  var s = getSettings_();
+  if (!s.remindersEnabled) return;
+  if (!s.appBaseUrl) { Logger.log('No appBaseUrl set; skipping Monday chase.'); return; }
+
+  var ss = SpreadsheetApp.getActive();
+  // Chase for the week that JUST ENDED. On Monday, fridayOf_(today) returns THIS
+  // week's upcoming Friday (which hasn't happened), so we step back one week.
+  var week = previousFriday_(new Date());
+  var status = adminSubmissionStatus(week);   // {rows:[{name,slug,submitted,at}]}
+  var subBySlug = {};
+  status.rows.forEach(function (r) { subBySlug[r.slug] = r.submitted; });
+
+  var team = activeTeamWithEmail_();
+  var overdue = team.filter(function (p) { return p.email && !subBySlug[p.slug]; });
+  if (!overdue.length) return;
+
+  overdue.forEach(function (p) {
+    var link = personLink_(s.appBaseUrl, p.slug);
+    var opts = {
+      to: p.email,
+      name: s.fromName,
+      subject: '[Reminder] ' + s.fromName + ' — timesheet overdue (week ending ' + week + ')',
+      htmlBody:
+        '<p>Hi ' + esc_(p.name) + ',</p>' +
+        '<p>Your timesheet for the week ending <b>' + week + '</b> hasn’t been submitted yet.</p>' +
+        '<p><a href="' + link + '" style="display:inline-block;background:#b06000;color:#fff;' +
+        'padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Submit your hours now</a></p>' +
+        '<p style="color:#6b7580;font-size:13px">Or paste this link: ' + link + '</p>'
+    };
+    if (s.ccEmail) opts.cc = s.ccEmail;
+    MailApp.sendEmail(opts);
+  });
+}
+
+/** Send a single test reminder to one person (or to the CC address) so you can preview it. */
+function adminSendTest(slug) {
+  var s = getSettings_();
+  if (!s.appBaseUrl) return {ok: false, error: 'no_base_url'};
+  var team = activeTeamWithEmail_();
+  var p = team.filter(function (x) { return x.slug === slug; })[0];
+  var to = (p && p.email) || s.ccEmail;
+  if (!to) return {ok: false, error: 'no_recipient'};
+  var link = personLink_(s.appBaseUrl, (p && p.slug) || 'aric');
+  MailApp.sendEmail({
+    to: to, name: s.fromName,
+    subject: '[TEST] ' + s.fromName + ' timesheet reminder',
+    htmlBody: '<p>This is a test of the timesheet reminder.</p>' +
+      '<p><a href="' + link + '">' + link + '</a></p>' +
+      '<p style="color:#6b7580;font-size:13px">If this looks right, your reminders are configured correctly.</p>'
+  });
+  return {ok: true, sentTo: to};
+}
+
+/** Send a welcome email with the person's personal link and a short how-to. */
+function adminSendWelcome(slug) {
+  var s = getSettings_();
+  if (!s.appBaseUrl) return {ok: false, error: 'no_base_url'};
+  var team = activeTeamWithEmail_();
+  var p = team.filter(function (x) { return x.slug === slug; })[0];
+  if (!p) return {ok: false, error: 'unknown_user'};
+  if (!p.email) return {ok: false, error: 'no_email'};
+
+  var link = personLink_(s.appBaseUrl, p.slug);
+  var btn = 'display:inline-block;background:#2f6f4f;color:#fff;padding:11px 20px;' +
+            'border-radius:8px;text-decoration:none;font-weight:600';
+  MailApp.sendEmail({
+    to: p.email,
+    name: s.fromName,
+    subject: 'Your Lockhern timesheet link',
+    htmlBody:
+      '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1a1f24;max-width:520px">' +
+      '<p>Hi ' + esc_(p.name) + ',</p>' +
+      '<p>You’re set up on our time tracker. Here’s your personal link — bookmark it, it’s just for you:</p>' +
+      '<p><a href="' + link + '" style="' + btn + '">Open my timesheet →</a></p>' +
+      '<p style="color:#6b7580;font-size:13px">Or paste this link: ' + link + '</p>' +
+      '<p><b>How it works:</b></p>' +
+      '<ul style="padding-left:18px;line-height:1.6">' +
+        '<li>Log your <b>hours per client, day by day</b>. Use the <b>Today</b> view for a quick daily entry, or the <b>Week grid</b> to fill in the whole week at once. Round to the nearest half hour; it doesn’t need to be exact.</li>' +
+        '<li>Hit <b>Save draft</b> whenever — your hours are kept and you can come back any day that week.</li>' +
+        '<li>There’s an <b>Internal</b> line for Lockhern work that can’t be attributed to a client (ClickUp tasks, stand-ups, etc.), and an <b>Ad hoc support</b> line for when you step in on a client you don’t normally cover.</li>' +
+        '<li>When the week is finished, hit <b>Submit week</b>. You can still edit and re-submit if something changes.</li>' +
+        '<li>If one of your clients is missing, or one should be removed from your list, just <b>message Aric</b> — he’ll update it.</li>' +
+      '</ul>' +
+      '<p><b>When to do it:</b><br>Please submit your week by <b>end of day Friday</b>. You’ll get a reminder Friday, and a nudge Monday if it’s still open.</p>' +
+      '<p>That’s it. Questions — just reply to this email.</p>' +
+      '<p>Thanks,<br>' + esc_(s.fromName) + '</p>' +
+      '</div>'
+  });
+  return {ok: true, sentTo: p.email};
+}
+
+/** Run ONCE from the editor to schedule the two reminders. Safe to re-run (clears first). */
+function installReminderTriggers() {
+  var s = getSettings_();
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    var fn = t.getHandlerFunction();
+    if (fn === 'sendFridayReminders' || fn === 'sendMondayChase') ScriptApp.deleteTrigger(t);
+  });
+  var fHour = isNaN(s.fridayHour) ? 9 : s.fridayHour;
+  var mHour = isNaN(s.mondayHour) ? 10 : s.mondayHour;
+  ScriptApp.newTrigger('sendFridayReminders').timeBased().onWeekDay(ScriptApp.WeekDay.FRIDAY).atHour(fHour).create();
+  ScriptApp.newTrigger('sendMondayChase').timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(mHour).create();
+  return 'Reminder triggers installed: Friday ' + fHour + ':00, Monday ' + mHour + ':00.';
+}
+function removeReminderTriggers() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    var fn = t.getHandlerFunction();
+    if (fn === 'sendFridayReminders' || fn === 'sendMondayChase') ScriptApp.deleteTrigger(t);
+  });
+  return 'Reminder triggers removed.';
+}
+function esc_(s) { return String(s).replace(/[&<>"]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+function adminReport(period, scope, userId) {
+  var ss = SpreadsheetApp.getActive();
+  var team = rows_(ss, DB.TEAM);
+  var clients = rows_(ss, DB.CLIENTS);
+  var clientName = {internal: 'Internal', adhoc: 'Ad hoc support'};
+  clients.forEach(function (c) { clientName[c.id] = c.name; });
+
+  var entriesRaw = rows_(ss, DB.ENTRIES).filter(function (e) {
+    if (String(e.clientId) === SUBMIT_MARKER) return false;
+    var ws = weekStr_(e.weekEnding);
+    var match = scope === 'month' ? ws.indexOf(period) === 0 : ws === period;
+    if (!match) return false;
+    if (userId && userId !== 'all' && String(e.userId) !== String(userId)) return false;
+    return true;
+  });
+
+  // Dedup by (user, week, client, DAY) — daily rows are summed; the latest wins per cell.
+  var dedup = {};
+  entriesRaw.forEach(function (e) {
+    var day = e.date ? weekStr_(e.date) : '';
+    var k = String(e.userId) + '|' + weekStr_(e.weekEnding) + '|' + String(e.clientId) + '|' + day;
+    var at = String(e.updatedAt || '');
+    if (!dedup[k] || at >= dedup[k].at) dedup[k] = {userId: String(e.userId), clientId: String(e.clientId), hours: Number(e.hours || 0), at: at};
+  });
+  var entries = Object.keys(dedup).map(function (k) { return dedup[k]; });
+
+  var weekSet = {};
+  entriesRaw.forEach(function (e) { weekSet[weekStr_(e.weekEnding)] = true; });
+  var weekCount = Math.max(1, Object.keys(weekSet).length);
+
+  var byClient = {};
+  entries.forEach(function (e) {
+    var key = clientName[e.clientId] || e.clientId;
+    byClient[key] = (byClient[key] || 0) + Number(e.hours || 0);
+  });
+  var byClientArr = Object.keys(byClient).map(function (k) { return {label: k, hours: round1_(byClient[k])}; })
+    .sort(function (a, b) { return b.hours - a.hours; });
+
+  var whoList = (userId && userId !== 'all')
+    ? team.filter(function (t) { return t.id === userId; })
+    : team.filter(function (t) { return t.active !== false; });
+  var logged = {};
+  entries.forEach(function (e) { logged[e.userId] = (logged[e.userId] || 0) + Number(e.hours || 0); });
+
+  var capacity = whoList.map(function (t) {
+    var avail = Number(t.weeklyHours || 0) * (scope === 'month' ? weekCount : 1);
+    var used = round1_(logged[t.id] || 0);
+    return {name: t.name, logged: used, available: round1_(avail),
+            util: avail > 0 ? Math.round(used / avail * 100) : 0};
+  });
+
+  return {ok: true, scope: scope, period: period, weekCount: weekCount,
+          byClient: byClientArr, capacity: capacity,
+          totalHours: round1_(byClientArr.reduce(function (s, x) { return s + x.hours; }, 0))};
+}
+
+function adminMonths() {
+  var ss = SpreadsheetApp.getActive();
+  var set = {};
+  rows_(ss, DB.ENTRIES).forEach(function (e) {
+    var m = weekStr_(e.weekEnding).substring(0, 7);
+    if (/^\d{4}-\d{2}$/.test(m)) set[m] = true;
+  });
+  var arr = Object.keys(set).sort().reverse();
+  if (!arr.length) arr = [new Date().toISOString().substring(0, 7)];
+  return arr;
+}
+
+/** Submission status = the explicit submit marker per person for the week. */
+function adminSubmissionStatus(week) {
+  var ss = SpreadsheetApp.getActive();
+  var team = rows_(ss, DB.TEAM).filter(function (t) { return t.active !== false; });
+  var wk = weekStr_(week);
+  var submittedAt = {};
+  var sh = ss.getSheetByName(DB.ENTRIES);
+  if (sh && sh.getLastRow() >= 2) {
+    var data = sh.getDataRange().getValues();
+    for (var r = 1; r < data.length; r++) {
+      if (weekStr_(data[r][2]) !== wk) continue;
+      if (String(data[r][3]) !== SUBMIT_MARKER) continue;   // only explicit submissions count
+      var uid = String(data[r][1]);
+      var stamp = data[r][5];
+      if (!submittedAt[uid] || String(stamp) > String(submittedAt[uid])) submittedAt[uid] = stamp;
+    }
+  }
+  return {
+    ok: true, week: wk,
+    rows: team.map(function (t) {
+      return {name: t.name, slug: t.slug, submitted: !!submittedAt[t.id], at: submittedAt[t.id] || ''};
+    })
+  };
+}
+
+// ============================================================
+//  DB HELPERS  (unchanged from the working app)
+// ============================================================
+function rows_(ss, name) {
+  var sh = ss.getSheetByName(name);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var data = sh.getDataRange().getValues();
+  var header = data[0];
+  var out = [];
+  for (var r = 1; r < data.length; r++) {
+    var o = {};
+    for (var c = 0; c < header.length; c++) {
+      var key = header[c], v = data[r][c];
+      if (key === 'active') v = (v === '' ? true : (v === true || v === 'TRUE' || v === 'true'));
+      o[key] = v;
+    }
+    o.id = String(o.id);
+    out.push(o);
+  }
+  return out;
+}
+function update_(ss, name, id, patch) {
+  var sh = ss.getSheetByName(name);
+  var data = sh.getDataRange().getValues();
+  var header = data[0];
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][0]) === String(id)) {
+      Object.keys(patch).forEach(function (k) {
+        var col = header.indexOf(k);
+        if (col >= 0) sh.getRange(r + 1, col + 1).setValue(patch[k]);
+      });
+      return true;
+    }
+  }
+  return false;
+}
+function addClient_(ss, name) { ss.getSheetByName(DB.CLIENTS).appendRow([Utilities.getUuid(), name, true]); }
+function addTeam_(ss, name, email, type, weeklyHours) {
+  var sh = ss.getSheetByName(DB.TEAM);
+  var slug = slugify_(name);
+  var existing = rows_(ss, DB.TEAM).map(function (t) { return t.slug; });
+  var base = slug, i = 2;
+  while (existing.indexOf(slug) >= 0) { slug = base + '_' + i; i++; }
+  sh.appendRow([Utilities.getUuid(), name, slug, email || '', type || 'full', weeklyHours || DEFAULT_FT_HOURS, true]);
+}
+function teamBySlug_(ss, slug) {
+  var t = rows_(ss, DB.TEAM).filter(function (x) { return x.slug === slug && x.active !== false; });
+  return t[0] || null;
+}
+function assignmentsFor_(ss, userId) {
+  var map = {};
+  rows_(ss, DB.ASSIGN).forEach(function (a) {
+    if (String(a.userId) === String(userId)) map[String(a.clientId)] = true;
+  });
+  return map;
+}
+
+/** Per-week daily hours for one user: { clientId: { 'yyyy-mm-dd': hours } }.
+ *  Legacy dateless rows are surfaced under the week's Friday date. */
+function entriesFor_(ss, userId, week) {
+  var uid = String(userId), wk = weekStr_(week);
+  var acc = {};   // clientId -> { date -> {hours, at} }
+  rows_(ss, DB.ENTRIES).forEach(function (e) {
+    if (String(e.clientId) === SUBMIT_MARKER) return;
+    if (String(e.userId) !== uid || weekStr_(e.weekEnding) !== wk) return;
+    var cid = String(e.clientId);
+    var d = e.date ? weekStr_(e.date) : wk;
+    var at = String(e.updatedAt || '');
+    acc[cid] = acc[cid] || {};
+    if (!acc[cid][d] || at >= acc[cid][d].at) acc[cid][d] = {hours: Number(e.hours || 0), at: at};
+  });
+  var out = {};
+  Object.keys(acc).forEach(function (cid) {
+    out[cid] = {};
+    Object.keys(acc[cid]).forEach(function (d) { out[cid][d] = acc[cid][d].hours; });
+  });
+  return out;
+}
+
+// ============================================================
+//  UTIL
+// ============================================================
+function slugify_(name) {
+  return String(name).toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+function fridayOf_(d) {
+  var x = new Date(d.getTime());
+  var dow = x.getDay();
+  x.setDate(x.getDate() + (dow === 6 ? -1 : 5 - dow));
+  return Utilities.formatDate(x, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+/** The most recent Friday that has ALREADY passed (or today if today is Friday).
+ *  On Mon-Thu this returns last week's Friday; on Fri/Sat it returns this week's. */
+function previousFriday_(d) {
+  var x = new Date(d.getTime());
+  var dow = x.getDay();           // 0 Sun .. 6 Sat
+  var back = (dow - 5 + 7) % 7;   // days since the most recent Friday
+  x.setDate(x.getDate() - back);
+  return Utilities.formatDate(x, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+function recentFridays_(n) {
+  var out = [], d = new Date();
+  var dow = d.getDay();
+  d.setDate(d.getDate() + (dow === 6 ? -1 : 5 - dow));
+  for (var i = 0; i < n; i++) {
+    out.push(Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd'));
+    d.setDate(d.getDate() - 7);
+  }
+  return out;
+}
+function round1_(n) { return Math.round(Number(n) * 10) / 10; }
+function weekStr_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  var s = String(v).trim();
+  var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return m[1] + '-' + m[2] + '-' + m[3];
+  var d = new Date(s);
+  if (!isNaN(d.getTime())) return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  return s;
+}

@@ -12,16 +12,24 @@
   *{box-sizing:border-box;}
   body{margin:0;background:var(--bg);color:var(--ink);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;}
-  .wrap{max-width:680px;margin:0 auto;padding:20px 16px 120px;}
+  .wrap{max-width:760px;margin:0 auto;padding:20px 16px 140px;}
   header.top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:4px;}
   h1{font-size:20px;margin:0;letter-spacing:-0.01em;}
   .sub{color:var(--muted);font-size:13px;}
   .card{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:16px;overflow:hidden;}
-  .weekbar{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
-  .weekbar label{font-size:13px;color:var(--muted);font-weight:600;}
+  .intro{padding:12px 16px;background:#f4f7f5;border-bottom:1px solid var(--line);font-size:13px;color:#3a5a4a;line-height:1.5;}
+  .controls{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+  .controls label{font-size:13px;color:var(--muted);font-weight:600;}
   select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .seg button{font:inherit;font-weight:600;font-size:13px;border:none;background:#fff;color:var(--muted);padding:8px 14px;cursor:pointer;}
+  .seg button.on{background:var(--accent);color:#fff;}
+  .spacer{flex:1;}
+  .wkndtoggle{font-size:13px;color:var(--muted);display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
+
+  /* rows (Today view) */
   .row{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);}
-  .row:last-child{border-bottom:none;}
+  .row:last-of-type{border-bottom:none;}
   .row.internal{background:#fafafa;}
   .cname{flex:1;font-size:15px;}
   .row.internal .cname{font-style:italic;color:var(--muted);}
@@ -29,22 +37,44 @@
     padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--field);}
   .hinput:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent);background:#fff;}
   .unit{width:26px;font-size:12px;color:var(--muted);}
-  .totals{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;background:var(--accent-soft);}
+  .daynote{padding:10px 16px;background:#fbfbf6;border-bottom:1px solid var(--line);font-size:13px;color:var(--muted);}
+
+  /* grid (Week view) */
+  .gridscroll{overflow-x:auto;}
+  table.grid{width:100%;border-collapse:collapse;font-size:14px;min-width:520px;}
+  table.grid th,table.grid td{padding:8px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;}
+  table.grid th.cn,table.grid td.cn{text-align:left;position:sticky;left:0;background:#fff;z-index:1;min-width:150px;}
+  table.grid tr.internal td.cn{font-style:italic;color:var(--muted);}
+  table.grid tr.internal td{background:#fafafa;}
+  table.grid tr.internal td.cn{background:#fafafa;}
+  table.grid thead th{font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);font-weight:700;background:#fff;}
+  table.grid thead th.today{color:var(--accent);}
+  table.grid td .g{width:58px;text-align:right;font:inherit;font-variant-numeric:tabular-nums;
+    padding:7px 8px;border:1px solid var(--line);border-radius:7px;background:var(--field);}
+  table.grid td .g:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent);background:#fff;}
+  table.grid td.rt{font-variant-numeric:tabular-nums;font-weight:700;}
+  table.grid tfoot td{font-variant-numeric:tabular-nums;font-weight:700;background:#f4f7f5;border-top:2px solid var(--line);}
+  table.grid tfoot td.cn{background:#f4f7f5;}
+
+  .totals{display:flex;justify-content:space-between;align-items:flex-start;padding:14px 16px;background:var(--accent-soft);}
   .totals .big{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;}
   .totals .cap{font-size:13px;color:var(--muted);}
   .bar{height:8px;border-radius:99px;background:#e4e7eb;overflow:hidden;margin-top:6px;}
   .bar>i{display:block;height:100%;background:var(--accent);}
   .bar>i.over{background:#c5221f;}
+
   .savebar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 16px;}
-  .savebar .inner{max-width:680px;margin:0 auto;width:100%;display:flex;gap:12px;align-items:center;justify-content:space-between;}
-  button.save{font:inherit;font-weight:600;color:#fff;background:var(--accent);border:none;padding:12px 22px;border-radius:10px;cursor:pointer;}
-  button.save:disabled{opacity:.5;cursor:default;}
-  .status{font-size:13px;color:var(--muted);}
+  .savebar .inner{max-width:760px;margin:0 auto;width:100%;display:flex;gap:10px;align-items:center;}
+  .status{font-size:13px;color:var(--muted);flex:1;}
   .status.ok{color:var(--accent);}
+  button.save{font:inherit;font-weight:600;color:var(--accent);background:#fff;border:1px solid var(--accent);padding:12px 18px;border-radius:10px;cursor:pointer;}
+  button.submit{font:inherit;font-weight:600;color:#fff;background:var(--accent);border:none;padding:12px 22px;border-radius:10px;cursor:pointer;}
+  button.save:disabled,button.submit:disabled{opacity:.5;cursor:default;}
   .msg{padding:40px 16px;text-align:center;color:var(--muted);}
   .skeleton{padding:16px;}
   .skeleton .sk{height:44px;background:#eef0f3;border-radius:8px;margin-bottom:8px;animation:p 1.2s infinite;}
   @keyframes p{50%{opacity:.5;}}
+  @media (prefers-reduced-motion: reduce){.skeleton .sk{animation:none;}}
 </style>
 </head>
 <body>
@@ -58,14 +88,20 @@
 </div>
 <div class="savebar" id="savebar" style="display:none">
   <div class="inner">
-    <span class="status" id="status">Changes save when you press Save.</span>
-    <button class="save" id="saveBtn">Save week</button>
+    <span class="status" id="status">Save keeps a draft. Submit when your week is done.</span>
+    <button class="save" id="saveBtn">Save draft</button>
+    <button class="submit" id="submitBtn">Submit week</button>
   </div>
 </div>
 
 <script>
   var SLUG = getParam('user');
-  var STATE = { week:null, user:null, clients:[], hours:{}, submitted:false };
+  var STATE = {
+    week:null, user:null, clients:[], hours:{}, submitted:false,
+    view:(localStorage.getItem('lt_view')||'today'),
+    weekend:(localStorage.getItem('lt_weekend')==='1'),
+    days:[], today:isoToday(), pickDay:null
+  };
 
   function getParam(k){ var m=new RegExp('[?&]'+k+'=([^&]+)').exec(location.search); return m?decodeURIComponent(m[1]):''; }
 
@@ -73,6 +109,31 @@
     var qs = new URLSearchParams(Object.assign({action:action}, params||{})).toString();
     return fetch('/api/proxy?'+qs).then(function(r){return r.json();});
   }
+  function apiPost(payload){
+    return fetch('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(r){return r.json();});
+  }
+
+  // ---- date helpers (week ends on Friday) ----
+  function pad(n){ return (n<10?'0':'')+n; }
+  function isoOf(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+  function isoToday(){ return isoOf(new Date()); }
+  function parseISO(s){ return new Date(s+'T12:00:00'); }
+  function daysOfWeek(weekEnding, includeWeekend){
+    var fri=parseISO(weekEnding), out=[];
+    var back=includeWeekend?6:4;   // 4 => Mon..Fri, 6 => Sat..Fri
+    for(var i=back;i>=0;i--){ var d=new Date(fri.getTime()); d.setDate(d.getDate()-i); out.push(isoOf(d)); }
+    return out;
+  }
+  function dayShort(iso){ return parseISO(iso).toLocaleDateString(undefined,{weekday:'short'}); }
+  function dayLong(iso){ return parseISO(iso).toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'}); }
+  function fmtWeek(w){ return 'Week ending '+parseISO(w).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
+
+  // ---- state accessors ----
+  function cellVal(cid,date){ return (STATE.hours[cid] && STATE.hours[cid][date]!=null) ? STATE.hours[cid][date] : 0; }
+  function setCell(cid,date,v){ if(!STATE.hours[cid])STATE.hours[cid]={}; STATE.hours[cid][date]=v; }
+  function isInternal(id){ return id==='internal'; }
+  function realClientCount(){ return STATE.clients.filter(function(c){return c.id!=='internal'&&c.id!=='adhoc';}).length; }
 
   function load(week){
     setStatus('Loading…','');
@@ -82,96 +143,221 @@
   function fail(err){
     var d = err&&err.message?err.message:'no details';
     document.getElementById('card').innerHTML =
-      '<div class="msg">Couldn\u2019t load your timesheet.<br><br><span style="font-size:12px;color:#c5221f">'+esc(d)+'</span></div>';
+      '<div class="msg">Couldn’t load your timesheet.<br><br><span style="font-size:12px;color:#c5221f">'+esc(d)+'</span></div>';
   }
 
   function render(res){
     if(!res||!res.ok){
       document.getElementById('hello').textContent='Timesheet not found';
-      document.getElementById('sub').textContent='This link isn\u2019t recognized. Ask Aric for your correct link.';
+      document.getElementById('sub').textContent='This link isn’t recognized. Ask Aric for your correct link.';
       document.getElementById('card').innerHTML='<div class="msg">No timesheet is associated with this link.</div>';
+      document.getElementById('savebar').style.display='none';
       return;
     }
-    STATE.week=res.week; STATE.user=res.user; STATE.clients=res.clients; STATE.hours=res.hours||{}; STATE.submitted=!!res.submitted;
+    STATE.week=res.week; STATE.user=res.user; STATE.clients=res.clients;
+    STATE._weeks=res.weeks||[];
+    STATE.hours=normalizeHours(res.hours||{}); STATE.submitted=!!res.submitted;
+    STATE.days=daysOfWeek(STATE.week, STATE.weekend);
+    // Default the "Today" day to today if it's in this week, else the last day (Friday).
+    STATE.pickDay = (STATE.days.indexOf(STATE.today)>=0) ? STATE.today : STATE.days[STATE.days.length-1];
+
     document.getElementById('hello').textContent='Hi, '+res.user.name;
-    document.getElementById('sub').textContent=(res.clients.length-2)+' clients \u00b7 '+res.user.weeklyHours+' hrs/wk capacity';
+    document.getElementById('sub').textContent=realClientCount()+' clients · '+res.user.weeklyHours+' hrs/wk capacity';
+    document.getElementById('savebar').style.display='flex';
+    draw();
+    setStatus(STATE.submitted?'Submitted ✓  edits are allowed — re-submit to update.':'Save keeps a draft. Submit when your week is done.', STATE.submitted?'ok':'');
+  }
 
-    var weekOpts=res.weeks.map(function(w){return '<option value="'+w+'"'+(w===res.week?' selected':'')+'>'+fmtWeek(w)+'</option>';}).join('');
-    var rows=res.clients.map(function(c){
-      var v=STATE.hours[c.id]!=null?STATE.hours[c.id]:'';
-      var isInt=c.id==='internal';
-      return '<div class="row'+(isInt?' internal':'')+'"><span class="cname">'+esc(c.name)+'</span>'+
-        '<input class="hinput" type="number" min="0" step="0.5" inputmode="decimal" data-id="'+c.id+'" value="'+v+'" placeholder="0">'+
-        '<span class="unit">hrs</span></div>';
-    }).join('');
+  // Accept legacy flat {cid:hours} OR nested {cid:{date:hours}}; always return nested.
+  function normalizeHours(h){
+    var out={};
+    Object.keys(h).forEach(function(cid){
+      var v=h[cid];
+      if(v && typeof v==='object'){ out[cid]={}; Object.keys(v).forEach(function(d){ out[cid][d]=Number(v[d])||0; }); }
+      else { out[cid]={}; out[cid][STATE.week]=Number(v)||0; }   // legacy total -> Friday cell
+    });
+    return out;
+  }
 
-    document.getElementById('card').innerHTML =
-      '<div style="padding:12px 16px;background:#f4f7f5;border-bottom:1px solid var(--line);font-size:13px;color:#3a5a4a;line-height:1.5">' +
-        'Enter your <b>total hours per client for the week</b> (one entry, not per day), then hit <b>Save week</b>. ' +
-        'Missing a client or need one removed? <b>Message Aric.</b>' +
-      '</div>' +
-      '<div class="weekbar"><label>Week ending</label><select id="weekSel">'+weekOpts+'</select>'+
-        '<span class="sub" id="submitState"></span></div>'+rows+
+  function draw(){
+    var head =
+      '<div class="intro">Log your <b>hours per client per day</b> and hit <b>Save draft</b> — come back any day this week. '+
+      'When the week is done, hit <b>Submit week</b>. Missing a client or need one removed? <b>Message Aric.</b></div>'+
+      '<div class="controls">'+
+        '<div class="seg">'+
+          '<button id="vToday" class="'+(STATE.view==='today'?'on':'')+'">Today</button>'+
+          '<button id="vWeek" class="'+(STATE.view==='week'?'on':'')+'">Week grid</button>'+
+        '</div>'+
+        '<div class="spacer"></div>'+
+        '<label>Week <select id="weekSel">'+weekOptions()+'</select></label>'+
+        '<span class="sub" id="submitState"></span>'+
+      '</div>';
+
+    var body = STATE.view==='week' ? weekGridHtml() : todayHtml();
+
+    var totals =
       '<div class="totals"><div style="width:100%">'+
         '<div style="display:flex;justify-content:space-between;align-items:baseline">'+
           '<div class="cap">Client hours <span id="clientNum" style="font-weight:700;color:var(--ink)">0.0</span></div>'+
-          '<div class="cap">Total logged</div></div>'+
+          '<div class="cap">Total logged (week)</div></div>'+
         '<div style="display:flex;justify-content:space-between;align-items:baseline">'+
           '<div class="cap" id="internalNote"></div>'+
           '<div class="big" id="totalNum">0.0</div></div>'+
         '<div class="bar"><i id="capBar" style="width:0%"></i></div>'+
         '<div class="cap" id="capText"></div></div></div>';
 
-    setSubmitBadge();
-    document.getElementById('savebar').style.display='flex';
+    document.getElementById('card').innerHTML = head + body + totals;
+
+    document.getElementById('vToday').addEventListener('click',function(){ switchView('today'); });
+    document.getElementById('vWeek').addEventListener('click',function(){ switchView('week'); });
     document.getElementById('weekSel').addEventListener('change',function(){ load(this.value); });
-    Array.prototype.forEach.call(document.querySelectorAll('.hinput'),function(i){ i.addEventListener('input',recalc); });
+    var ds=document.getElementById('daySel'); if(ds) ds.addEventListener('change',function(){ STATE.pickDay=this.value; draw(); recalc(); });
+    var wk=document.getElementById('wkndChk'); if(wk) wk.addEventListener('change',function(){
+      STATE.weekend=this.checked; localStorage.setItem('lt_weekend',this.checked?'1':'0');
+      STATE.days=daysOfWeek(STATE.week,STATE.weekend); draw(); recalc();
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-cell]'),function(i){ i.addEventListener('input',onInput); });
+
+    setSubmitBadge();
     recalc();
-    setStatus('Loaded. Changes save when you press Save.','');
+  }
+
+  function switchView(v){ STATE.view=v; localStorage.setItem('lt_view',v); draw(); recalc(); }
+
+  function weekOptions(){
+    return (STATE._weeks||[]).map(function(w){
+      return '<option value="'+w+'"'+(w===STATE.week?' selected':'')+'>'+fmtWeek(w)+'</option>';
+    }).join('');
+  }
+
+  function todayHtml(){
+    var d=STATE.pickDay;
+    var opts=STATE.days.map(function(x){
+      var lbl=dayLong(x)+(x===STATE.today?' · today':'');
+      return '<option value="'+x+'"'+(x===d?' selected':'')+'>'+esc(lbl)+'</option>';
+    }).join('');
+    var dayline='<div class="controls" style="border-top:none"><label>Day <select id="daySel">'+opts+'</select></label>'+weekendToggle()+'</div>';
+    var rows=STATE.clients.map(function(c){
+      var v=cellVal(c.id,d); var vs=v?String(v):'';
+      return '<div class="row'+(isInternal(c.id)?' internal':'')+'"><span class="cname">'+esc(c.name)+'</span>'+
+        '<input class="hinput" data-cell type="number" min="0" step="0.5" inputmode="decimal" '+
+        'data-id="'+esc(c.id)+'" data-date="'+d+'" value="'+vs+'" placeholder="0">'+
+        '<span class="unit">hrs</span></div>';
+    }).join('');
+    return dayline + rows;
+  }
+
+  function weekGridHtml(){
+    var ths=STATE.days.map(function(x){
+      return '<th class="'+(x===STATE.today?'today':'')+'">'+dayShort(x)+'<br><span style="font-weight:400;color:var(--muted)">'+parseISO(x).getDate()+'</span></th>';
+    }).join('');
+    var rows=STATE.clients.map(function(c){
+      var cells=STATE.days.map(function(x){
+        var v=cellVal(c.id,x); var vs=v?String(v):'';
+        return '<td><input class="g" data-cell type="number" min="0" step="0.5" inputmode="decimal" '+
+          'data-id="'+esc(c.id)+'" data-date="'+x+'" value="'+vs+'" placeholder="0"></td>';
+      }).join('');
+      return '<tr'+(isInternal(c.id)?' class="internal"':'')+'><td class="cn">'+esc(c.name)+'</td>'+cells+
+        '<td class="rt" id="rt-'+esc(c.id)+'">0.0</td></tr>';
+    }).join('');
+    var foot='<tr><td class="cn">Daily total</td>'+STATE.days.map(function(x){
+      return '<td id="ft-'+x+'">0.0</td>';
+    }).join('')+'<td id="ft-grand">0.0</td></tr>';
+    return '<div class="controls" style="border-top:none">'+weekendToggle()+'</div>'+
+      '<div class="gridscroll"><table class="grid"><thead><tr><th class="cn">Client</th>'+ths+'<th>Total</th></tr></thead>'+
+      '<tbody>'+rows+'</tbody><tfoot>'+foot+'</tfoot></table></div>';
+  }
+
+  function weekendToggle(){
+    return '<label class="wkndtoggle" style="margin-left:auto"><input type="checkbox" id="wkndChk"'+(STATE.weekend?' checked':'')+'> include weekend</label>';
+  }
+
+  function onInput(e){
+    var el=e.target;
+    var cid=el.getAttribute('data-id'), date=el.getAttribute('data-date');
+    var v=parseFloat(el.value); if(isNaN(v)||v<0)v=0;
+    setCell(cid,date,v);
+    recalc();
   }
 
   function setSubmitBadge(){
     var s=document.getElementById('submitState'); if(!s)return;
-    if(STATE.submitted){ s.textContent='\u2713 submitted'; s.style.color='var(--accent)'; s.style.fontWeight='600'; }
+    if(STATE.submitted){ s.textContent='✓ submitted'; s.style.color='var(--accent)'; s.style.fontWeight='600'; }
     else { s.textContent='not yet submitted'; s.style.color='#b06000'; }
   }
 
   function recalc(){
     var client=0, internal=0;
-    Array.prototype.forEach.call(document.querySelectorAll('.hinput'),function(i){
-      var id=i.getAttribute('data-id'); var v=parseFloat(i.value)||0;
-      if(id==='internal') internal+=v; else client+=v;   // ad hoc counts as client work
+    var perClient={}, perDay={};
+    STATE.days.forEach(function(x){ perDay[x]=0; });
+    STATE.clients.forEach(function(c){
+      var rowTotal=0;
+      STATE.days.forEach(function(x){ var v=cellVal(c.id,x)||0; rowTotal+=v; perDay[x]+=v; });
+      perClient[c.id]=rowTotal;
+      if(isInternal(c.id)) internal+=rowTotal; else client+=rowTotal;   // ad hoc counts as client work
     });
     var total=client+internal;
+
+    // grid per-row / per-day totals (only present in week view)
+    STATE.clients.forEach(function(c){ var el=document.getElementById('rt-'+cssId(c.id)); if(el)el.textContent=(perClient[c.id]||0).toFixed(1); });
+    STATE.days.forEach(function(x){ var el=document.getElementById('ft-'+x); if(el)el.textContent=perDay[x].toFixed(1); });
+    var ge=document.getElementById('ft-grand'); if(ge)ge.textContent=total.toFixed(1);
+
     document.getElementById('clientNum').textContent=client.toFixed(1);
     document.getElementById('totalNum').textContent=total.toFixed(1);
     document.getElementById('internalNote').textContent = internal>0 ? ('+ '+internal.toFixed(1)+' internal') : '';
     var cap=Number(STATE.user.weeklyHours)||0; var pct=cap>0?Math.round(total/cap*100):0;
-    var bar=document.getElementById('capBar'); bar.style.width=Math.min(100,pct)+'%'; bar.className=pct>100?'over':'';
-    document.getElementById('capText').textContent=cap>0?pct+'% of your '+cap+'-hr weekly capacity (total)':'';
+    var bar=document.getElementById('capBar'); if(bar){ bar.style.width=Math.min(100,pct)+'%'; bar.className=pct>100?'over':''; }
+    var ct=document.getElementById('capText'); if(ct)ct.textContent=cap>0?pct+'% of your '+cap+'-hr weekly capacity (total)':'';
+  }
+  function cssId(id){ return String(id).replace(/"/g,''); }
+
+  // Gather every cell for the current week window (plus any dates already in state
+  // for this week) so blanks/clears are persisted too.
+  function gatherDays(){
+    var dateSet={}; STATE.days.forEach(function(x){ dateSet[x]=true; });
+    STATE.clients.forEach(function(c){
+      if(STATE.hours[c.id]) Object.keys(STATE.hours[c.id]).forEach(function(d){ dateSet[d]=true; });
+    });
+    var dates=Object.keys(dateSet);
+    var out={};
+    STATE.clients.forEach(function(c){
+      var m={}; dates.forEach(function(d){ m[d]=cellVal(c.id,d)||0; });
+      out[c.id]=m;
+    });
+    return out;
   }
 
+  function busy(on){ document.getElementById('saveBtn').disabled=on; document.getElementById('submitBtn').disabled=on; }
+
   function save(){
-    var map={};
-    Array.prototype.forEach.call(document.querySelectorAll('.hinput'),function(i){ map[i.getAttribute('data-id')]=parseFloat(i.value)||0; });
-    var week=document.getElementById('weekSel').value;
-    var btn=document.getElementById('saveBtn'); btn.disabled=true; setStatus('Saving…','');
-    fetch('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action:'empSave',slug:SLUG,week:week,hours:map})})
-      .then(function(r){return r.json();})
+    busy(true); setStatus('Saving draft…','');
+    apiPost({action:'empSave',slug:SLUG,week:STATE.week,days:gatherDays()})
       .then(function(r){
-        btn.disabled=false;
-        if(r&&r.ok){ setStatus('Saved \u2713  '+r.savedAt,'ok'); STATE.submitted=true; setSubmitBadge(); }
+        busy(false);
+        if(r&&r.ok){ setStatus('Draft saved ✓  '+ (r.savedAt||''),'ok'); }
         else setStatus('Save failed'+(r&&r.detail?': '+r.detail:'. Try again.'),'');
       })
-      .catch(function(e){ btn.disabled=false; setStatus('Save failed: '+e,''); });
+      .catch(function(e){ busy(false); setStatus('Save failed: '+e,''); });
+  }
+
+  function submit(){
+    if(!confirm('Submit your timesheet for the '+fmtWeek(STATE.week).toLowerCase()+'?\nYou can still edit and re-submit afterwards.')) return;
+    busy(true); setStatus('Submitting…','');
+    apiPost({action:'empSubmit',slug:SLUG,week:STATE.week,days:gatherDays()})
+      .then(function(r){
+        busy(false);
+        if(r&&r.ok){ STATE.submitted=true; setSubmitBadge(); setStatus('Submitted ✓  '+(r.savedAt||''),'ok'); }
+        else setStatus('Submit failed'+(r&&r.detail?': '+r.detail:'. Try again.'),'');
+      })
+      .catch(function(e){ busy(false); setStatus('Submit failed: '+e,''); });
   }
 
   function setStatus(t,cls){ var s=document.getElementById('status'); s.textContent=t; s.className='status '+(cls||''); }
-  function fmtWeek(w){ var d=new Date(w+'T12:00:00'); return 'Week ending '+d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
   function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
 
   document.getElementById('saveBtn').addEventListener('click',save);
+  document.getElementById('submitBtn').addEventListener('click',submit);
   if(!SLUG){ render({ok:false}); } else { load(''); }
 </script>
 </body>
