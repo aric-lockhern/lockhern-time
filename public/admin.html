@@ -82,19 +82,19 @@
       <div><div class="n" id="kPeople">0</div><div class="l">People logging</div></div>
     </div>
 
+    <div class="card"><h2>Hours by client</h2>
+      <div class="sub" style="margin-bottom:10px">Every client with logged time. Click a slice to break it down by person.</div>
+      <div class="chartbox" id="byClientBox"><canvas id="byClient"></canvas></div>
+    </div>
+
     <div class="card">
       <div class="drillhead">
         <h2>Drill into an account</h2>
         <select id="drillClient"><option value="">Pick a client…</option></select>
         <span class="sub" id="drillTotal"></span>
       </div>
-      <table class="brk"><thead><tr><th>Person</th><th class="num">Hours</th><th class="pctcell">Share</th></tr></thead>
-        <tbody id="drillRows"><tr><td colspan="3" class="muted">Pick a client above, or click a bar in “Hours by client”.</td></tr></tbody></table>
-    </div>
-
-    <div class="card"><h2>Hours by client</h2>
-      <div class="sub" style="margin-bottom:10px">Every client with logged time. Click a bar to break it down by person.</div>
-      <div class="chartbox" id="byClientBox"><canvas id="byClient"></canvas></div>
+      <table class="brk" id="drillTable" style="display:none"><thead><tr><th>Person</th><th class="num">Hours</th><th class="pctcell">Share</th></tr></thead>
+        <tbody id="drillRows"></tbody></table>
     </div>
 
     <div class="card"><h2>Hours by person</h2>
@@ -484,9 +484,10 @@
     document.getElementById('kClients').textContent=byClient.length;
     document.getElementById('kPeople').textContent=people.filter(function(p){return p.hours>0;}).length;
 
-    // keep the drill-down selection if still present
+    // keep the drill-down selection if still present; list clients A→Z
     var dc=document.getElementById('drillClient'); var prev=dc.value;
-    dc.innerHTML='<option value="">Pick a client…</option>'+byClient.map(function(c){return '<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>';}).join('');
+    var azClients=byClient.slice().sort(function(a,b){return String(a.name).localeCompare(String(b.name));});
+    dc.innerHTML='<option value="">Pick a client…</option>'+azClients.map(function(c){return '<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>';}).join('');
     dc.value=byClient.some(function(c){return c.id===prev;})?prev:'';
 
     drawByClient(byClient);
@@ -497,15 +498,26 @@
 
   function sizeBox(id,count){ document.getElementById(id).style.height=Math.max(180,count*30+70)+'px'; }
 
+  // Hours by client — doughnut showing every client (no "Other" rollup).
   function drawByClient(rows){
-    sizeBox('byClientBox',rows.length);
+    document.getElementById('byClientBox').style.height=Math.max(340,rows.length*22+120)+'px';
+    var labels=rows.map(function(r){return r.name;}), vals=rows.map(function(r){return r.hours;});
+    var palette=genColors(rows.length);
+    var pieTotal=vals.reduce(function(s,v){return s+v;},0)||1;
     if(byClientChart)byClientChart.destroy();
-    byClientChart=new Chart(document.getElementById('byClient'),{type:'bar',
-      data:{labels:rows.map(function(r){return r.name;}),datasets:[{label:'Hours',data:rows.map(function(r){return r.hours;}),backgroundColor:genColors(rows.length)}]},
-      options:{indexAxis:'y',maintainAspectRatio:false,responsive:true,scales:{x:{beginAtZero:true}},
-        plugins:{legend:{display:false},tooltip:{callbacks:{label:function(ctx){return ' '+ctx.parsed.x+' hrs';}}}},
-        onClick:function(evt,els){ if(els&&els.length){ document.getElementById('drillClient').value=rows[els[0].index].id; renderDrill(); } },
-        animation:{duration:200}}});
+    byClientChart=new Chart(document.getElementById('byClient'),{type:'doughnut',
+      data:{labels:labels,datasets:[{data:vals,backgroundColor:palette,borderWidth:1,borderColor:'#fff'}]},
+      options:{maintainAspectRatio:false,responsive:true,cutout:'58%',animation:{duration:250},
+        plugins:{legend:{position:'right',labels:{boxWidth:12,font:{size:11},
+          generateLabels:function(chart){
+            var d=chart.data, ds=d.datasets[0];
+            return d.labels.map(function(lab,i){
+              var pct=Math.round((ds.data[i]||0)/pieTotal*100);
+              return {text:lab+' ('+pct+'%)',fillStyle:ds.backgroundColor[i],strokeStyle:'#fff',lineWidth:1,index:i,hidden:!chart.getDataVisibility(i)};
+            });
+          }}},
+          tooltip:{callbacks:{label:function(ctx){var v=ctx.parsed||0;return ' '+ctx.label+': '+v+' hrs ('+Math.round(v/pieTotal*100)+'%)';}}}},
+        onClick:function(evt,els){ if(els&&els.length){ document.getElementById('drillClient').value=rows[els[0].index].id; renderDrill(); } }}});
   }
   function drawByPerson(rows){
     sizeBox('byPersonBox',rows.length);
@@ -535,10 +547,11 @@
   function renderDrill(){
     var cid=document.getElementById('drillClient').value;
     var tb=document.getElementById('drillRows'), tot=document.getElementById('drillTotal');
+    var table=document.getElementById('drillTable');
     if(!cid||!MATRIX||!MATRIX.matrix[cid]){
-      tb.innerHTML='<tr><td colspan="3" class="muted">Pick a client above, or click a bar in “Hours by client”.</td></tr>';
-      tot.textContent=''; return;
+      table.style.display='none'; tb.innerHTML=''; tot.textContent=''; return;   // hidden until an account is picked
     }
+    table.style.display='';
     var uid=currentUser(); var row=MATRIX.matrix[cid];
     var nameById={}; MATRIX.people.forEach(function(p){ nameById[p.id]=p.name; });
     var arr=Object.keys(row).filter(function(pid){ return uid==='all'||String(pid)===String(uid); })
