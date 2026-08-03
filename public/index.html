@@ -75,9 +75,14 @@
   .skeleton .sk{height:44px;background:#eef0f3;border-radius:8px;margin-bottom:8px;animation:p 1.2s infinite;}
   @keyframes p{50%{opacity:.5;}}
   @media (prefers-reduced-motion: reduce){.skeleton .sk{animation:none;}}
+  #loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:9999;opacity:0;transition:opacity .15s;pointer-events:none;overflow:hidden;}
+  #loadbar.on{opacity:1;}
+  #loadbar::before{content:'';position:absolute;top:0;height:100%;width:35%;background:var(--accent);border-radius:0 3px 3px 0;animation:ld 1.1s infinite ease-in-out;}
+  @keyframes ld{0%{left:-35%;}50%{left:45%;}100%{left:100%;}}
 </style>
 </head>
 <body>
+<div id="loadbar"></div>
 <div class="wrap">
   <header class="top">
     <div><h1 id="hello">Timesheet</h1><div class="sub" id="sub">Loading…</div></div>
@@ -105,13 +110,18 @@
 
   function getParam(k){ var m=new RegExp('[?&]'+k+'=([^&]+)').exec(location.search); return m?decodeURIComponent(m[1]):''; }
 
+  var pending=0;
+  function startLoad(){ pending++; var b=document.getElementById('loadbar'); if(b)b.classList.add('on'); }
+  function endLoad(){ pending=Math.max(0,pending-1); if(pending===0){ var b=document.getElementById('loadbar'); if(b)b.classList.remove('on'); } }
   function api(action, params){
+    startLoad();
     var qs = new URLSearchParams(Object.assign({action:action}, params||{})).toString();
-    return fetch('/api/proxy?'+qs).then(function(r){return r.json();});
+    return fetch('/api/proxy?'+qs).then(function(r){return r.json();}).finally(endLoad);
   }
   function apiPost(payload){
+    startLoad();
     return fetch('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
-      .then(function(r){return r.json();});
+      .then(function(r){return r.json();}).finally(endLoad);
   }
 
   // ---- date helpers (week ends on Friday) ----

@@ -40,8 +40,20 @@
   .copybox code{background:var(--chip);padding:6px 8px;border-radius:6px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px;}
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 18px;border-radius:10px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;}
   .toast.show{opacity:1;}
-  .chartbox{position:relative;width:100%;}
-  .chartbox canvas{position:absolute;inset:0;}
+  canvas{max-height:320px;}
+  table.brk tr.clickable{cursor:pointer;}
+  table.brk tr.clickable:hover td{background:#f4f7f5;}
+  /* top progress bar — visible whenever a request is in flight */
+  #loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:9999;opacity:0;transition:opacity .15s;pointer-events:none;overflow:hidden;}
+  #loadbar.on{opacity:1;}
+  #loadbar::before{content:'';position:absolute;top:0;height:100%;width:35%;background:var(--accent);border-radius:0 3px 3px 0;animation:ld 1.1s infinite ease-in-out;}
+  @keyframes ld{0%{left:-35%;}50%{left:45%;}100%{left:100%;}}
+  /* first-load overlay */
+  .bootwrap{position:fixed;inset:0;background:var(--bg);z-index:9000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;}
+  .bootwrap.hide{display:none;}
+  .spinner{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .bootmsg{color:var(--muted);font-size:14px;}
   .drillhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;}
   .drillhead h2{margin:0;}
   table.brk{width:100%;border-collapse:collapse;font-size:14px;}
@@ -82,9 +94,22 @@
       <div><div class="n" id="kPeople">0</div><div class="l">People logging</div></div>
     </div>
 
-    <div class="card"><h2>Hours by client</h2>
-      <div class="sub" style="margin-bottom:10px">Every client with logged time. Click a slice to break it down by person.</div>
-      <div class="chartbox" id="byClientBox"><canvas id="byClient"></canvas></div>
+    <div class="grid2">
+      <div class="card"><h2>Hours by client</h2>
+        <div class="sub" style="margin-bottom:8px">Top clients this period. Click a slice to break it down by person.</div>
+        <canvas id="byClient"></canvas>
+      </div>
+      <div class="card"><h2>Capacity — logged vs available</h2><canvas id="cap"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="drillhead">
+        <h2>All clients</h2>
+        <button class="link" id="toggleAll">Show all ▾</button>
+        <span class="sub" id="allTotal"></span>
+      </div>
+      <table class="brk" id="allTable" style="display:none"><thead><tr><th>Client</th><th class="num">Hours</th><th class="pctcell">Share</th></tr></thead>
+        <tbody id="allRows"></tbody></table>
     </div>
 
     <div class="card">
@@ -95,14 +120,6 @@
       </div>
       <table class="brk" id="drillTable" style="display:none"><thead><tr><th>Person</th><th class="num">Hours</th><th class="pctcell">Share</th></tr></thead>
         <tbody id="drillRows"></tbody></table>
-    </div>
-
-    <div class="card"><h2>Hours by person</h2>
-      <div class="chartbox" id="byPersonBox"><canvas id="byPerson"></canvas></div>
-    </div>
-
-    <div class="card"><h2>Capacity — logged vs available</h2>
-      <div class="chartbox" id="capBox"><canvas id="cap"></canvas></div>
     </div>
   </section>
 
@@ -188,27 +205,36 @@
   </section>
 </div>
 <div class="toast" id="toast"></div>
+<div id="loadbar"></div>
+<div class="bootwrap" id="boot"><div class="spinner"></div><div class="bootmsg">Loading your dashboard…</div></div>
 
 <script>
-  var DATA=null, byClientChart=null, byPersonChart=null, capChart=null;
+  var DATA=null, byClientChart=null, capChart=null;
   var MATRIX=null;   // { clients, people, matrix:{clientId:{userId:hours}}, weekCount, scope, period }
   var SITE=location.origin;   // real domain, for building employee links
 
+  // Any in-flight request shows the top progress bar (feedback while Apps Script works).
+  var pending=0;
+  function startLoad(){ pending++; var b=document.getElementById('loadbar'); if(b)b.classList.add('on'); }
+  function endLoad(){ pending=Math.max(0,pending-1); if(pending===0){ var b=document.getElementById('loadbar'); if(b)b.classList.remove('on'); } }
   function api(action, params){
+    startLoad();
     var qs=new URLSearchParams(Object.assign({action:action},params||{})).toString();
-    return fetch('/api/proxy?'+qs).then(function(r){return r.json();});
+    return fetch('/api/proxy?'+qs).then(function(r){return r.json();}).finally(endLoad);
   }
   function apiPost(payload){
-    return fetch('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();});
+    startLoad();
+    return fetch('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).finally(endLoad);
   }
 
   function boot(){
     api('adminLoad').then(function(r){
+      document.getElementById('boot').classList.add('hide');
       if(!r||!r.ok){ document.getElementById('note').textContent='Failed to load'+(r&&r.detail?': '+r.detail:''); return; }
       DATA=r;
       document.getElementById('note').textContent='Live \u00b7 employee links use ?user=<slug> \u00b7 admin is /admin';
       renderTeam(); renderClients(); renderAssign(); initReports(); initStatus(); initSettings(); renderWorkload();
-    }).catch(function(e){ document.getElementById('note').textContent='Load error: '+e; });
+    }).catch(function(e){ document.getElementById('boot').classList.add('hide'); document.getElementById('note').textContent='Load error: '+e; });
   }
 
   document.querySelectorAll('nav.tabs button').forEach(function(b){
@@ -425,6 +451,7 @@
     document.getElementById('periodSel').addEventListener('change',loadMatrix);
     document.getElementById('userSel').addEventListener('change',renderReports);   // instant, no network
     document.getElementById('drillClient').addEventListener('change',renderDrill);  // instant
+    document.getElementById('toggleAll').addEventListener('click',toggleAll);       // instant
     onScope();
   }
   function fillUserFilter(){
@@ -474,40 +501,42 @@
     });
   }
 
+  var LASTBYCLIENT=[];
   function renderReports(){
     if(!MATRIX)return;
     var uid=currentUser();
-    var byClient=filteredClients(uid);
+    var byClient=filteredClients(uid); LASTBYCLIENT=byClient;
     var people=personTotals(uid);
     var total=byClient.reduce(function(s,x){return s+x.hours;},0);
     document.getElementById('kTotal').textContent=round1(total).toFixed(1);
     document.getElementById('kClients').textContent=byClient.length;
     document.getElementById('kPeople').textContent=people.filter(function(p){return p.hours>0;}).length;
 
-    // keep the drill-down selection if still present; list clients A→Z
+    // drill dropdown A→Z, keep selection if still present
     var dc=document.getElementById('drillClient'); var prev=dc.value;
-    var azClients=byClient.slice().sort(function(a,b){return String(a.name).localeCompare(String(b.name));});
-    dc.innerHTML='<option value="">Pick a client…</option>'+azClients.map(function(c){return '<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>';}).join('');
+    var az=byClient.slice().sort(function(a,b){return String(a.name).localeCompare(String(b.name));});
+    dc.innerHTML='<option value="">Pick a client…</option>'+az.map(function(c){return '<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>';}).join('');
     dc.value=byClient.some(function(c){return c.id===prev;})?prev:'';
 
     drawByClient(byClient);
-    drawByPerson(people.filter(function(p){return p.hours>0;}).sort(function(a,b){return b.hours-a.hours;}));
     drawCapacity(people, MATRIX.scope, MATRIX.weekCount);
+    renderAllClients(byClient, total);
     renderDrill();
   }
 
-  function sizeBox(id,count){ document.getElementById(id).style.height=Math.max(180,count*30+70)+'px'; }
-
-  // Hours by client — doughnut showing every client (no "Other" rollup).
+  // Hours by client — compact doughnut: top 10 + "Other" (full list is the table below).
+  var PIE_TOP=10;
   function drawByClient(rows){
-    document.getElementById('byClientBox').style.height=Math.max(340,rows.length*22+120)+'px';
-    var labels=rows.map(function(r){return r.name;}), vals=rows.map(function(r){return r.hours;});
-    var palette=genColors(rows.length);
+    var top=rows.slice(0,PIE_TOP), rest=rows.slice(PIE_TOP);
+    var restSum=rest.reduce(function(s,x){return s+x.hours;},0);
+    var labels=top.map(function(r){return r.name;}), vals=top.map(function(r){return r.hours;});
+    if(restSum>0){ labels.push('Other ('+rest.length+')'); vals.push(round1(restSum)); }
+    var palette=genColors(labels.length);
     var pieTotal=vals.reduce(function(s,v){return s+v;},0)||1;
     if(byClientChart)byClientChart.destroy();
     byClientChart=new Chart(document.getElementById('byClient'),{type:'doughnut',
       data:{labels:labels,datasets:[{data:vals,backgroundColor:palette,borderWidth:1,borderColor:'#fff'}]},
-      options:{maintainAspectRatio:false,responsive:true,cutout:'58%',animation:{duration:250},
+      options:{cutout:'58%',animation:{duration:250},
         plugins:{legend:{position:'right',labels:{boxWidth:12,font:{size:11},
           generateLabels:function(chart){
             var d=chart.data, ds=d.datasets[0];
@@ -517,31 +546,48 @@
             });
           }}},
           tooltip:{callbacks:{label:function(ctx){var v=ctx.parsed||0;return ' '+ctx.label+': '+v+' hrs ('+Math.round(v/pieTotal*100)+'%)';}}}},
-        onClick:function(evt,els){ if(els&&els.length){ document.getElementById('drillClient').value=rows[els[0].index].id; renderDrill(); } }}});
-  }
-  function drawByPerson(rows){
-    sizeBox('byPersonBox',rows.length);
-    if(byPersonChart)byPersonChart.destroy();
-    byPersonChart=new Chart(document.getElementById('byPerson'),{type:'bar',
-      data:{labels:rows.map(function(r){return r.name;}),datasets:[{label:'Hours',data:rows.map(function(r){return r.hours;}),backgroundColor:genColors(rows.length)}]},
-      options:{indexAxis:'y',maintainAspectRatio:false,responsive:true,scales:{x:{beginAtZero:true}},
-        plugins:{legend:{display:false},tooltip:{callbacks:{label:function(ctx){return ' '+ctx.parsed.x+' hrs';}}}},
-        onClick:function(evt,els){ if(els&&els.length){ document.getElementById('userSel').value=rows[els[0].index].id; renderReports(); } },
-        animation:{duration:200}}});
+        onClick:function(evt,els){ if(!els||!els.length)return; var i=els[0].index;
+          if(i<top.length){ document.getElementById('drillClient').value=top[i].id; renderDrill(); document.getElementById('drillTable').scrollIntoView({behavior:'smooth',block:'nearest'}); }
+          else openAllClients();   // the "Other" slice opens the full table
+        }}});
   }
   function drawCapacity(people, scope, weekCount){
     var cap=people.map(function(p){
       var avail=round1(p.weeklyHours*(scope==='month'?weekCount:1));
       return {name:p.name,logged:p.hours,available:avail,util:avail>0?Math.round(p.hours/avail*100):0};
     }).sort(function(a,b){return b.util-a.util;});
-    sizeBox('capBox',cap.length);
     if(capChart)capChart.destroy();
     capChart=new Chart(document.getElementById('cap'),{type:'bar',
       data:{labels:cap.map(function(c){return c.name;}),datasets:[
         {label:'Logged',data:cap.map(function(c){return c.logged;}),backgroundColor:cap.map(function(c){return c.util>100?'#c5221f':'#2f6f4f';})},
         {label:'Available',data:cap.map(function(c){return c.available;}),backgroundColor:'#d7dde3'}]},
-      options:{indexAxis:'y',maintainAspectRatio:false,responsive:true,scales:{x:{beginAtZero:true}},
-        plugins:{legend:{position:'top'},tooltip:{callbacks:{afterLabel:function(ctx){var c=cap[ctx.dataIndex];return ctx.datasetIndex===0?c.util+'% utilized':'';}}}},animation:{duration:200}}});
+      options:{indexAxis:'y',scales:{x:{beginAtZero:true}},plugins:{legend:{position:'top'},
+        tooltip:{callbacks:{afterLabel:function(ctx){var c=cap[ctx.dataIndex];return ctx.datasetIndex===0?c.util+'% utilized':'';}}}},animation:{duration:250}}});
+  }
+
+  // ---- all clients table (full list; collapsed by default) ----
+  var allExpanded=false;
+  function toggleAll(){ allExpanded=!allExpanded; applyAllVisibility(); }
+  function openAllClients(){ allExpanded=true; applyAllVisibility(); document.getElementById('allTable').scrollIntoView({behavior:'smooth',block:'nearest'}); }
+  function applyAllVisibility(){
+    document.getElementById('allTable').style.display=allExpanded?'':'none';
+    document.getElementById('toggleAll').textContent=allExpanded?'Hide':('Show all '+LASTBYCLIENT.length+' ▾');
+  }
+  function renderAllClients(rows, total){
+    var t=total||rows.reduce(function(s,x){return s+x.hours;},0);
+    document.getElementById('allTotal').textContent=rows.length+' clients · '+round1(t).toFixed(1)+' hrs';
+    document.getElementById('allRows').innerHTML=rows.length?rows.map(function(c){
+      var pct=t>0?Math.round(c.hours/t*100):0;
+      return '<tr class="clickable" data-cid="'+esc(c.id)+'"><td>'+esc(c.name)+'</td><td class="num">'+c.hours.toFixed(1)+'</td>'+
+        '<td class="pctcell"><div class="minibar"><i style="width:'+pct+'%"></i></div><span class="sub">'+pct+'%</span></td></tr>';
+    }).join(''):'<tr><td colspan="3" class="muted">No hours logged in the selected view.</td></tr>';
+    document.querySelectorAll('#allRows tr.clickable').forEach(function(tr){
+      tr.addEventListener('click',function(){
+        document.getElementById('drillClient').value=tr.getAttribute('data-cid'); renderDrill();
+        document.getElementById('drillTable').scrollIntoView({behavior:'smooth',block:'nearest'});
+      });
+    });
+    applyAllVisibility();
   }
 
   function renderDrill(){
