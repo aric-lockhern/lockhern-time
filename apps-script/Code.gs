@@ -141,6 +141,7 @@ function handle_(e, p) {
       case 'empSubmit': return json_(empSubmit(p.slug, p.week, p.days || null));
       case 'adminLoad': return json_(adminLoad());
       case 'adminReport': return json_(adminReport(p.period, p.scope, p.userId));
+      case 'adminMatrix': return json_(adminMatrix(p.period, p.scope));
       case 'adminMonths': return json_({ok: true, months: adminMonths()});
       case 'adminStatus': return json_(adminSubmissionStatus(p.week));
       case 'addClient': return json_(adminAddClient(p.name));
@@ -581,6 +582,65 @@ function adminReport(period, scope, userId) {
   return {ok: true, scope: scope, period: period, weekCount: weekCount,
           byClient: byClientArr, capacity: capacity,
           totalHours: round1_(byClientArr.reduce(function (s, x) { return s + x.hours; }, 0))};
+}
+
+/**
+ * Compact client x person hours matrix for a period. ONE sheet scan; the admin
+ * page does all charting, filtering and drill-down from this in the browser.
+ * Returns { clients:[{id,name}], people:[{id,name,type,weeklyHours}],
+ *           matrix:{ clientId: { userId: hours } }, weekCount }.
+ */
+function adminMatrix(period, scope) {
+  var ss = SpreadsheetApp.getActive();
+  var team = rows_(ss, DB.TEAM);
+  var teamById = {};
+  team.forEach(function (t) { teamById[String(t.id)] = t; });
+  var clientName = {internal: 'Internal', adhoc: 'Ad hoc support'};
+  rows_(ss, DB.CLIENTS).forEach(function (c) { clientName[String(c.id)] = c.name; });
+
+  var raw = rows_(ss, DB.ENTRIES).filter(function (e) {
+    if (String(e.clientId) === SUBMIT_MARKER) return false;
+    var ws = weekStr_(e.weekEnding);
+    return scope === 'month' ? ws.indexOf(period) === 0 : ws === period;
+  });
+
+  // Dedup per (user, week, client, DAY); latest wins. Then sum into the matrix.
+  var dedup = {};
+  raw.forEach(function (e) {
+    var day = e.date ? weekStr_(e.date) : '';
+    var k = String(e.userId) + '|' + weekStr_(e.weekEnding) + '|' + String(e.clientId) + '|' + day;
+    var at = String(e.updatedAt || '');
+    if (!dedup[k] || at >= dedup[k].at) dedup[k] = {userId: String(e.userId), clientId: String(e.clientId), hours: Number(e.hours || 0), at: at};
+  });
+
+  var matrix = {};
+  var weekSet = {};
+  raw.forEach(function (e) { weekSet[weekStr_(e.weekEnding)] = true; });
+  Object.keys(dedup).forEach(function (k) {
+    var e = dedup[k];
+    if (!matrix[e.clientId]) matrix[e.clientId] = {};
+    matrix[e.clientId][e.userId] = round1_((matrix[e.clientId][e.userId] || 0) + e.hours);
+  });
+
+  // People: active roster, plus any inactive person who logged time in the period.
+  var people = team.filter(function (t) { return t.active !== false; })
+    .map(function (t) { return {id: String(t.id), name: t.name, type: t.type, weeklyHours: Number(t.weeklyHours || 0)}; });
+  var have = {};
+  people.forEach(function (p) { have[p.id] = true; });
+  Object.keys(matrix).forEach(function (cid) {
+    Object.keys(matrix[cid]).forEach(function (uid) {
+      if (!have[uid]) {
+        have[uid] = true;
+        var t = teamById[uid];
+        people.push({id: uid, name: (t ? t.name : uid) + ' (inactive)', type: t ? t.type : '', weeklyHours: t ? Number(t.weeklyHours || 0) : 0});
+      }
+    });
+  });
+
+  var clients = Object.keys(matrix).map(function (cid) { return {id: cid, name: clientName[cid] || cid}; });
+
+  return {ok: true, scope: scope, period: period, weekCount: Math.max(1, Object.keys(weekSet).length),
+          clients: clients, people: people, matrix: matrix};
 }
 
 function adminMonths() {

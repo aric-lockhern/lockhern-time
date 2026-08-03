@@ -40,7 +40,16 @@
   .copybox code{background:var(--chip);padding:6px 8px;border-radius:6px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px;}
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 18px;border-radius:10px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;}
   .toast.show{opacity:1;}
-  canvas{max-height:320px;}
+  .chartbox{position:relative;width:100%;}
+  .chartbox canvas{position:absolute;inset:0;}
+  .drillhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;}
+  .drillhead h2{margin:0;}
+  table.brk{width:100%;border-collapse:collapse;font-size:14px;}
+  table.brk th,table.brk td{padding:8px 8px;border-bottom:1px solid var(--line);text-align:left;}
+  table.brk td.num{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;min-width:70px;}
+  table.brk td.pctcell{width:34%;}
+  table.brk .minibar{height:8px;border-radius:99px;background:#eef1f4;overflow:hidden;}
+  table.brk .minibar>i{display:block;height:100%;background:var(--accent);}
   .secthead td{background:#eef1f4;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#5f6368;padding:8px 8px;}
   .bar{height:8px;border-radius:99px;background:#e4e7eb;overflow:hidden;}
   .bar>i{display:block;height:100%;background:var(--accent);}
@@ -72,9 +81,28 @@
       <div><div class="n" id="kClients">0</div><div class="l">Clients touched</div></div>
       <div><div class="n" id="kPeople">0</div><div class="l">People logging</div></div>
     </div>
-    <div class="grid2">
-      <div class="card"><h2>Hours by client</h2><canvas id="pie"></canvas></div>
-      <div class="card"><h2>Capacity — logged vs available</h2><canvas id="cap"></canvas></div>
+
+    <div class="card">
+      <div class="drillhead">
+        <h2>Drill into an account</h2>
+        <select id="drillClient"><option value="">Pick a client…</option></select>
+        <span class="sub" id="drillTotal"></span>
+      </div>
+      <table class="brk"><thead><tr><th>Person</th><th class="num">Hours</th><th class="pctcell">Share</th></tr></thead>
+        <tbody id="drillRows"><tr><td colspan="3" class="muted">Pick a client above, or click a bar in “Hours by client”.</td></tr></tbody></table>
+    </div>
+
+    <div class="card"><h2>Hours by client</h2>
+      <div class="sub" style="margin-bottom:10px">Every client with logged time. Click a bar to break it down by person.</div>
+      <div class="chartbox" id="byClientBox"><canvas id="byClient"></canvas></div>
+    </div>
+
+    <div class="card"><h2>Hours by person</h2>
+      <div class="chartbox" id="byPersonBox"><canvas id="byPerson"></canvas></div>
+    </div>
+
+    <div class="card"><h2>Capacity — logged vs available</h2>
+      <div class="chartbox" id="capBox"><canvas id="cap"></canvas></div>
     </div>
   </section>
 
@@ -162,7 +190,8 @@
 <div class="toast" id="toast"></div>
 
 <script>
-  var DATA=null, pieChart=null, capChart=null;
+  var DATA=null, byClientChart=null, byPersonChart=null, capChart=null;
+  var MATRIX=null;   // { clients, people, matrix:{clientId:{userId:hours}}, weekCount, scope, period }
   var SITE=location.origin;   // real domain, for building employee links
 
   function api(action, params){
@@ -388,16 +417,21 @@
   function setMsg(t){ document.getElementById('setMsg').textContent=t; }
 
   // ---- reports ----
+  // One network call per period/scope change fetches a compact client x person
+  // matrix; the employee filter, charts and drill-down all compute in-browser.
   function initReports(){
     fillUserFilter();
     document.getElementById('scopeSel').addEventListener('change',onScope);
-    document.getElementById('periodSel').addEventListener('change',refreshReport);
-    document.getElementById('userSel').addEventListener('change',refreshReport);
+    document.getElementById('periodSel').addEventListener('change',loadMatrix);
+    document.getElementById('userSel').addEventListener('change',renderReports);   // instant, no network
+    document.getElementById('drillClient').addEventListener('change',renderDrill);  // instant
     onScope();
   }
   function fillUserFilter(){
+    var cur=document.getElementById('userSel').value||'all';
     document.getElementById('userSel').innerHTML='<option value="all">Everyone</option>'+
       DATA.team.filter(function(t){return t.active!==false;}).map(function(t){return '<option value="'+t.id+'">'+esc(t.name)+'</option>';}).join('');
+    document.getElementById('userSel').value=cur;
   }
   function onScope(){
     var scope=document.getElementById('scopeSel').value; var ps=document.getElementById('periodSel');
@@ -405,57 +439,120 @@
       ps.innerHTML=DATA.weeks.map(function(w){return '<option value="'+w+'">'+w+'</option>';}).join('');
       // Default to the previous completed week (index 1), not the current in-progress one.
       if(DATA.weeks.length>1) ps.value=DATA.weeks[1];
-      refreshReport();
+      loadMatrix();
     }
-    else { api('adminMonths').then(function(res){ var months=(res&&res.months)||[]; ps.innerHTML=months.map(function(m){return '<option value="'+m+'">'+m+'</option>';}).join(''); refreshReport(); }); }
+    else { api('adminMonths').then(function(res){ var months=(res&&res.months)||[]; ps.innerHTML=months.map(function(m){return '<option value="'+m+'">'+m+'</option>';}).join(''); loadMatrix(); }); }
   }
-  function refreshReport(){
-    var scope=document.getElementById('scopeSel').value; var period=document.getElementById('periodSel').value; var user=document.getElementById('userSel').value;
+  function setReportsLoading(){ ['kTotal','kClients','kPeople'].forEach(function(id){ document.getElementById(id).textContent='…'; }); }
+  function loadMatrix(){
+    var scope=document.getElementById('scopeSel').value; var period=document.getElementById('periodSel').value;
     if(!period)return;
-    api('adminReport',{period:period,scope:scope,userId:user}).then(drawReport);
+    setReportsLoading();
+    api('adminMatrix',{period:period,scope:scope}).then(function(m){
+      MATRIX=(m&&m.ok)?m:{ok:true,clients:[],people:[],matrix:{},weekCount:1,scope:scope};
+      renderReports();
+    }).catch(function(e){ document.getElementById('note').textContent='Report load error: '+e; });
   }
-  function drawReport(r){
-    if(!r||!r.ok)return;
-    document.getElementById('kTotal').textContent=r.totalHours.toFixed(1);
-    document.getElementById('kClients').textContent=r.byClient.length;
-    document.getElementById('kPeople').textContent=r.capacity.filter(function(c){return c.logged>0;}).length;
-    var top=r.byClient.slice(0,12); var others=r.byClient.slice(12).reduce(function(s,x){return s+x.hours;},0);
-    var labels=top.map(function(x){return x.label;}); var vals=top.map(function(x){return x.hours;});
-    if(others>0){labels.push('Other');vals.push(Math.round(others*10)/10);}
-    var palette=genColors(labels.length);
-    var pieTotal=vals.reduce(function(s,v){return s+v;},0)||1;
-    if(pieChart)pieChart.destroy();
-    pieChart=new Chart(document.getElementById('pie'),{type:'doughnut',
-      data:{labels:labels,datasets:[{data:vals,backgroundColor:palette,borderWidth:1,borderColor:'#fff'}]},
-      options:{plugins:{legend:{position:'right',labels:{boxWidth:12,font:{size:11},
-        generateLabels:function(chart){
-          var d=chart.data; var ds=d.datasets[0];
-          return d.labels.map(function(lab,i){
-            var val=ds.data[i]||0; var pct=Math.round(val/pieTotal*100);
-            return {
-              text: lab+' ('+pct+'%)',
-              fillStyle: ds.backgroundColor[i],
-              strokeStyle: '#fff', lineWidth: 1,
-              index: i,
-              hidden: !chart.getDataVisibility(i)
-            };
-          });
-        }
-      }},
-      tooltip:{callbacks:{label:function(ctx){
-        var val=ctx.parsed||0; var pct=Math.round(val/pieTotal*100);
-        return ' '+ctx.label+': '+val+' hrs ('+pct+'%)';
-      }}}},cutout:'58%',animation:{duration:300}}});
-    var cap=r.capacity.slice().sort(function(a,b){return b.util-a.util;});
+
+  function currentUser(){ return document.getElementById('userSel').value||'all'; }
+  function mCell(cid,uid){ var r=MATRIX.matrix[cid]; return (r&&r[uid]!=null)?Number(r[uid]):0; }
+  function round1(n){ return Math.round(Number(n)*10)/10; }
+
+  function filteredClients(uid){   // -> [{id,name,hours}] with hours>0, sorted desc
+    return MATRIX.clients.map(function(c){
+      var h;
+      if(uid==='all'){ var row=MATRIX.matrix[c.id]||{}; h=Object.keys(row).reduce(function(s,k){return s+Number(row[k]||0);},0); }
+      else h=mCell(c.id,uid);
+      return {id:c.id,name:c.name,hours:round1(h)};
+    }).filter(function(x){return x.hours>0;}).sort(function(a,b){return b.hours-a.hours;});
+  }
+  function personTotals(uid){      // -> [{id,name,type,weeklyHours,hours}]
+    var people=(uid==='all')?MATRIX.people:MATRIX.people.filter(function(p){return String(p.id)===String(uid);});
+    return people.map(function(p){
+      var h=0; Object.keys(MATRIX.matrix).forEach(function(cid){ h+=mCell(cid,p.id); });
+      return {id:p.id,name:p.name,type:p.type,weeklyHours:p.weeklyHours,hours:round1(h)};
+    });
+  }
+
+  function renderReports(){
+    if(!MATRIX)return;
+    var uid=currentUser();
+    var byClient=filteredClients(uid);
+    var people=personTotals(uid);
+    var total=byClient.reduce(function(s,x){return s+x.hours;},0);
+    document.getElementById('kTotal').textContent=round1(total).toFixed(1);
+    document.getElementById('kClients').textContent=byClient.length;
+    document.getElementById('kPeople').textContent=people.filter(function(p){return p.hours>0;}).length;
+
+    // keep the drill-down selection if still present
+    var dc=document.getElementById('drillClient'); var prev=dc.value;
+    dc.innerHTML='<option value="">Pick a client…</option>'+byClient.map(function(c){return '<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>';}).join('');
+    dc.value=byClient.some(function(c){return c.id===prev;})?prev:'';
+
+    drawByClient(byClient);
+    drawByPerson(people.filter(function(p){return p.hours>0;}).sort(function(a,b){return b.hours-a.hours;}));
+    drawCapacity(people, MATRIX.scope, MATRIX.weekCount);
+    renderDrill();
+  }
+
+  function sizeBox(id,count){ document.getElementById(id).style.height=Math.max(180,count*30+70)+'px'; }
+
+  function drawByClient(rows){
+    sizeBox('byClientBox',rows.length);
+    if(byClientChart)byClientChart.destroy();
+    byClientChart=new Chart(document.getElementById('byClient'),{type:'bar',
+      data:{labels:rows.map(function(r){return r.name;}),datasets:[{label:'Hours',data:rows.map(function(r){return r.hours;}),backgroundColor:genColors(rows.length)}]},
+      options:{indexAxis:'y',maintainAspectRatio:false,responsive:true,scales:{x:{beginAtZero:true}},
+        plugins:{legend:{display:false},tooltip:{callbacks:{label:function(ctx){return ' '+ctx.parsed.x+' hrs';}}}},
+        onClick:function(evt,els){ if(els&&els.length){ document.getElementById('drillClient').value=rows[els[0].index].id; renderDrill(); } },
+        animation:{duration:200}}});
+  }
+  function drawByPerson(rows){
+    sizeBox('byPersonBox',rows.length);
+    if(byPersonChart)byPersonChart.destroy();
+    byPersonChart=new Chart(document.getElementById('byPerson'),{type:'bar',
+      data:{labels:rows.map(function(r){return r.name;}),datasets:[{label:'Hours',data:rows.map(function(r){return r.hours;}),backgroundColor:genColors(rows.length)}]},
+      options:{indexAxis:'y',maintainAspectRatio:false,responsive:true,scales:{x:{beginAtZero:true}},
+        plugins:{legend:{display:false},tooltip:{callbacks:{label:function(ctx){return ' '+ctx.parsed.x+' hrs';}}}},
+        onClick:function(evt,els){ if(els&&els.length){ document.getElementById('userSel').value=rows[els[0].index].id; renderReports(); } },
+        animation:{duration:200}}});
+  }
+  function drawCapacity(people, scope, weekCount){
+    var cap=people.map(function(p){
+      var avail=round1(p.weeklyHours*(scope==='month'?weekCount:1));
+      return {name:p.name,logged:p.hours,available:avail,util:avail>0?Math.round(p.hours/avail*100):0};
+    }).sort(function(a,b){return b.util-a.util;});
+    sizeBox('capBox',cap.length);
     if(capChart)capChart.destroy();
     capChart=new Chart(document.getElementById('cap'),{type:'bar',
       data:{labels:cap.map(function(c){return c.name;}),datasets:[
         {label:'Logged',data:cap.map(function(c){return c.logged;}),backgroundColor:cap.map(function(c){return c.util>100?'#c5221f':'#2f6f4f';})},
         {label:'Available',data:cap.map(function(c){return c.available;}),backgroundColor:'#d7dde3'}]},
-      options:{indexAxis:'y',scales:{x:{beginAtZero:true}},plugins:{legend:{position:'top'},
-        tooltip:{callbacks:{afterlabel:function(ctx){var c=cap[ctx.dataIndex];return ctx.datasetIndex===0?c.util+'% utilized':'';}}}},animation:{duration:300}}});
+      options:{indexAxis:'y',maintainAspectRatio:false,responsive:true,scales:{x:{beginAtZero:true}},
+        plugins:{legend:{position:'top'},tooltip:{callbacks:{afterLabel:function(ctx){var c=cap[ctx.dataIndex];return ctx.datasetIndex===0?c.util+'% utilized':'';}}}},animation:{duration:200}}});
   }
 
+  function renderDrill(){
+    var cid=document.getElementById('drillClient').value;
+    var tb=document.getElementById('drillRows'), tot=document.getElementById('drillTotal');
+    if(!cid||!MATRIX||!MATRIX.matrix[cid]){
+      tb.innerHTML='<tr><td colspan="3" class="muted">Pick a client above, or click a bar in “Hours by client”.</td></tr>';
+      tot.textContent=''; return;
+    }
+    var uid=currentUser(); var row=MATRIX.matrix[cid];
+    var nameById={}; MATRIX.people.forEach(function(p){ nameById[p.id]=p.name; });
+    var arr=Object.keys(row).filter(function(pid){ return uid==='all'||String(pid)===String(uid); })
+      .map(function(pid){ return {name:nameById[pid]||pid, hours:round1(row[pid])}; })
+      .filter(function(x){return x.hours>0;}).sort(function(a,b){return b.hours-a.hours;});
+    var sum=arr.reduce(function(s,x){return s+x.hours;},0);
+    var cname=(MATRIX.clients.filter(function(c){return c.id===cid;})[0]||{}).name||cid;
+    tot.textContent=cname+' · '+round1(sum).toFixed(1)+' hrs total';
+    tb.innerHTML=arr.length?arr.map(function(x){
+      var pct=sum>0?Math.round(x.hours/sum*100):0;
+      return '<tr><td>'+esc(x.name)+'</td><td class="num">'+x.hours.toFixed(1)+'</td>'+
+        '<td class="pctcell"><div class="minibar"><i style="width:'+pct+'%"></i></div><span class="sub">'+pct+'%</span></td></tr>';
+    }).join(''):'<tr><td colspan="3" class="muted">No hours for this client in the selected view.</td></tr>';
+  }
   // ---- helpers ----
   function assigneesFor(clientId){
     var ids=DATA.assignments.filter(function(a){return String(a.clientId)===String(clientId);}).map(function(a){return String(a.userId);});
