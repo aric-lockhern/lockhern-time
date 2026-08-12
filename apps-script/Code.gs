@@ -137,8 +137,8 @@ function handle_(e, p) {
     ensureEntriesSchema_(SpreadsheetApp.getActive());
     switch (action) {
       case 'empLoad':   return json_(empLoad(p.slug, p.week || null));
-      case 'empSave':   return json_(empSave(p.slug, p.week, p.days || {}));
-      case 'empSubmit': return json_(empSubmit(p.slug, p.week, p.days || null));
+      case 'empSave':   return json_(empSave(p.slug, p.week, p.days || {}, p.assign || []));
+      case 'empSubmit': return json_(empSubmit(p.slug, p.week, p.days || null, p.assign || []));
       case 'adminLoad': return json_(adminLoad());
       case 'adminReport': return json_(adminReport(p.period, p.scope, p.userId));
       case 'adminMatrix': return json_(adminMatrix(p.period, p.scope));
@@ -175,12 +175,20 @@ function empLoad(slug, week) {
 
   var wk = week || fridayOf_(new Date());
   var assignedIds = assignmentsFor_(ss, user.id);
-  var clients = rows_(ss, DB.CLIENTS)
-    .filter(function (c) { return c.active !== false && assignedIds[c.id]; })
-    .map(function (c) { return {id: c.id, name: c.name}; });
+  var hours = entriesFor_(ss, user.id, wk);   // { clientId: { 'yyyy-mm-dd': hours } }
+  var allActive = rows_(ss, DB.CLIENTS).filter(function (c) { return c.active !== false; });
+
+  // Show a client row if it's assigned to this user OR they've already logged time
+  // against it this week (so a self-added client stays put mid-week).
+  var show = {};
+  allActive.forEach(function (c) { if (assignedIds[c.id]) show[c.id] = true; });
+  Object.keys(hours).forEach(function (cid) { if (cid !== 'internal' && cid !== 'adhoc') show[cid] = true; });
+
+  var clients = allActive.filter(function (c) { return show[c.id]; })
+    .map(function (c) { return {id: c.id, name: c.name, assigned: !!assignedIds[c.id]}; });
   clients.sort(function (a, b) { return a.name.localeCompare(b.name); });
-  clients.push({id: 'internal', name: 'Internal'});
-  clients.push({id: 'adhoc', name: 'Ad hoc support (stepped in on a client you don’t own)'});
+  clients.push({id: 'internal', name: 'Internal', assigned: true});
+  clients.push({id: 'adhoc', name: 'Ad hoc support (stepped in on a client you don’t own)', assigned: true});
 
   return {
     ok: true,
@@ -188,9 +196,34 @@ function empLoad(slug, week) {
     week: wk,
     weeks: recentFridays_(10),
     clients: clients,
-    hours: entriesFor_(ss, user.id, wk),   // { clientId: { 'yyyy-mm-dd': hours } }
+    allClients: allActive.map(function (c) { return {id: c.id, name: c.name}; })
+                         .sort(function (a, b) { return a.name.localeCompare(b.name); }),
+    hours: hours,
     submitted: isSubmitted_(ss, user.id, wk)
   };
+}
+
+/** Add (clientId,userId) assignment rows the user doesn't already have. Runs inside
+ *  a caller's lock. Only active, real clients (not internal/adhoc) are assignable. */
+function selfAssign_(ss, userId, clientIds) {
+  if (!clientIds || !clientIds.length) return 0;
+  var uid = String(userId);
+  var valid = {};
+  rows_(ss, DB.CLIENTS).forEach(function (c) { if (c.active !== false) valid[String(c.id)] = true; });
+  var sh = ss.getSheetByName(DB.ASSIGN);
+  if (!sh) return 0;
+  var data = sh.getDataRange().getValues();
+  var existing = {};
+  for (var r = 1; r < data.length; r++) existing[String(data[r][0]) + '|' + String(data[r][1])] = true;
+  var appends = [];
+  clientIds.forEach(function (cid) {
+    cid = String(cid);
+    if (cid && cid !== 'internal' && cid !== 'adhoc' && valid[cid] && !existing[cid + '|' + uid]) {
+      appends.push([cid, uid]); existing[cid + '|' + uid] = true;
+    }
+  });
+  if (appends.length) sh.getRange(sh.getLastRow() + 1, 1, appends.length, 2).setValues(appends);
+  return appends.length;
 }
 
 /** Submitted = an explicit submission marker exists for this user + week. */
@@ -209,7 +242,7 @@ function isSubmitted_(ss, userId, week) {
  * Draft save. Upserts hours per (client, day). Does NOT submit.
  * days = { clientId: { 'yyyy-mm-dd': hours } }
  */
-function empSave(slug, weekEnding, days) {
+function empSave(slug, weekEnding, days, assign) {
   var ss = SpreadsheetApp.getActive();
   var user = teamBySlug_(ss, slug);
   if (!user) return {ok: false, error: 'unknown_user'};
@@ -222,14 +255,15 @@ function empSave(slug, weekEnding, days) {
     var sh = ensureEntriesSchema_(ss);
     var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
     writeDays_(sh, user, wk, days || {}, stamp);
-    return {ok: true, savedAt: stamp, submitted: isSubmitted_(ss, user.id, wk)};
+    var assigned = selfAssign_(ss, user.id, assign || []);
+    return {ok: true, savedAt: stamp, submitted: isSubmitted_(ss, user.id, wk), assigned: assigned};
   } finally {
     lock.releaseLock();
   }
 }
 
 /** Explicit submit. Optionally saves the latest cells first, then marks the week submitted. */
-function empSubmit(slug, weekEnding, days) {
+function empSubmit(slug, weekEnding, days, assign) {
   var ss = SpreadsheetApp.getActive();
   var user = teamBySlug_(ss, slug);
   if (!user) return {ok: false, error: 'unknown_user'};
@@ -242,8 +276,9 @@ function empSubmit(slug, weekEnding, days) {
     var sh = ensureEntriesSchema_(ss);
     var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
     if (days) writeDays_(sh, user, wk, days, stamp);
+    var assigned = selfAssign_(ss, user.id, assign || []);
     setSubmitted_(sh, String(user.id), wk, stamp);
-    return {ok: true, savedAt: stamp, submitted: true};
+    return {ok: true, savedAt: stamp, submitted: true, assigned: assigned};
   } finally {
     lock.releaseLock();
   }
