@@ -189,6 +189,7 @@ function empLoad(slug, week) {
   clients.sort(function (a, b) { return a.name.localeCompare(b.name); });
   clients.push({id: 'internal', name: 'Internal', assigned: true});
   clients.push({id: 'adhoc', name: 'Ad hoc support (stepped in on a client you don’t own)', assigned: true});
+  clients.push({id: 'pto', name: 'PTO / time off', assigned: true, pto: true});
 
   return {
     ok: true,
@@ -630,7 +631,7 @@ function adminMatrix(period, scope) {
   var team = rows_(ss, DB.TEAM);
   var teamById = {};
   team.forEach(function (t) { teamById[String(t.id)] = t; });
-  var clientName = {internal: 'Internal', adhoc: 'Ad hoc support'};
+  var clientName = {internal: 'Internal', adhoc: 'Ad hoc support', pto: 'PTO / time off'};
   rows_(ss, DB.CLIENTS).forEach(function (c) { clientName[String(c.id)] = c.name; });
 
   var raw = rows_(ss, DB.ENTRIES).filter(function (e) {

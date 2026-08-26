@@ -40,8 +40,10 @@
   .row{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);}
   .row:last-of-type{border-bottom:none;}
   .row.internal{background:#fafafa;}
+  .row.pto{background:#f6f4fb;}
   .cname{flex:1;font-size:15px;}
   .row.internal .cname{font-style:italic;color:var(--muted);}
+  .row.pto .cname{font-style:italic;color:#6b5a8a;}
   .hinput{width:84px;text-align:right;font:inherit;font-variant-numeric:tabular-nums;
     padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--field);}
   .hinput:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent);background:#fff;}
@@ -56,6 +58,8 @@
   table.grid tr.internal td.cn{font-style:italic;color:var(--muted);}
   table.grid tr.internal td{background:#fafafa;}
   table.grid tr.internal td.cn{background:#fafafa;}
+  table.grid tr.pto td{background:#f6f4fb;}
+  table.grid tr.pto td.cn{background:#f6f4fb;font-style:italic;color:#6b5a8a;}
   table.grid thead th{font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);font-weight:700;background:#fff;}
   table.grid thead th.today{color:var(--accent);}
   table.grid td .g{width:58px;text-align:right;font:inherit;font-variant-numeric:tabular-nums;
@@ -152,7 +156,7 @@
   function cellVal(cid,date){ return (STATE.hours[cid] && STATE.hours[cid][date]!=null) ? STATE.hours[cid][date] : 0; }
   function setCell(cid,date,v){ if(!STATE.hours[cid])STATE.hours[cid]={}; STATE.hours[cid][date]=v; }
   function isInternal(id){ return id==='internal'; }
-  function realClientCount(){ return STATE.clients.filter(function(c){return c.id!=='internal'&&c.id!=='adhoc';}).length; }
+  function realClientCount(){ return STATE.clients.filter(function(c){return c.id!=='internal'&&c.id!=='adhoc'&&c.id!=='pto';}).length; }
 
   function load(week){
     setStatus('Loading…','');
@@ -250,11 +254,12 @@
   function switchView(v){ STATE.view=v; localStorage.setItem('lt_view',v); draw(); recalc(); }
 
   // ---- add-a-client (self-service) ----
+  function specialRank(id){ return id==='internal'?1:id==='adhoc'?2:id==='pto'?3:0; }
+  function specialClass(id){ return id==='internal'?'internal':id==='pto'?'pto':''; }
   function sortClients(){
     STATE.clients.sort(function(a,b){
-      var ra=(a.id==='internal'||a.id==='adhoc'), rb=(b.id==='internal'||b.id==='adhoc');
-      if(ra!==rb) return ra?1:-1;                       // internal/adhoc always last
-      if(ra&&rb) return a.id==='internal'?-1:1;          // internal before adhoc
+      var ra=specialRank(a.id), rb=specialRank(b.id);   // real clients first, then internal/adhoc/pto
+      if(ra!==rb) return ra-rb;
       return String(a.name).localeCompare(String(b.name));
     });
   }
@@ -320,8 +325,8 @@
     }).join('');
     var dayline='<div class="controls" style="border-top:none"><label>Day <select id="daySel">'+opts+'</select></label>'+weekendToggle()+'</div>';
     var rows=STATE.clients.map(function(c){
-      var v=cellVal(c.id,d); var vs=v?String(v):'';
-      return '<div class="row'+(isInternal(c.id)?' internal':'')+'"><span class="cname">'+esc(c.name)+'</span>'+
+      var v=cellVal(c.id,d); var vs=v?String(v):''; var scl=specialClass(c.id);
+      return '<div class="row'+(scl?' '+scl:'')+'"><span class="cname">'+esc(c.name)+'</span>'+
         '<input class="hinput" data-cell type="number" min="0" step="0.5" inputmode="decimal" '+
         'data-id="'+esc(c.id)+'" data-date="'+d+'" value="'+vs+'" placeholder="0">'+
         '<span class="unit">hrs</span></div>';
@@ -339,7 +344,8 @@
         return '<td><input class="g" data-cell type="number" min="0" step="0.5" inputmode="decimal" '+
           'data-id="'+esc(c.id)+'" data-date="'+x+'" value="'+vs+'" placeholder="0"></td>';
       }).join('');
-      return '<tr'+(isInternal(c.id)?' class="internal"':'')+'><td class="cn">'+esc(c.name)+'</td>'+cells+
+      var scl=specialClass(c.id);
+      return '<tr'+(scl?' class="'+scl+'"':'')+'><td class="cn">'+esc(c.name)+'</td>'+cells+
         '<td class="rt" id="rt-'+esc(c.id)+'">0.0</td></tr>';
     }).join('');
     var foot='<tr><td class="cn">Daily total</td>'+STATE.days.map(function(x){
@@ -369,16 +375,18 @@
   }
 
   function recalc(){
-    var client=0, internal=0;
+    var client=0, internal=0, pto=0;
     var perClient={}, perDay={};
     STATE.days.forEach(function(x){ perDay[x]=0; });
     STATE.clients.forEach(function(c){
       var rowTotal=0;
-      STATE.days.forEach(function(x){ var v=cellVal(c.id,x)||0; rowTotal+=v; perDay[x]+=v; });
+      STATE.days.forEach(function(x){ var v=cellVal(c.id,x)||0; rowTotal+=v; if(c.id!=='pto') perDay[x]+=v; });   // PTO not counted as worked
       perClient[c.id]=rowTotal;
-      if(isInternal(c.id)) internal+=rowTotal; else client+=rowTotal;   // ad hoc counts as client work
+      if(c.id==='pto') pto+=rowTotal;
+      else if(isInternal(c.id)) internal+=rowTotal;
+      else client+=rowTotal;                                            // ad hoc counts as client work
     });
-    var total=client+internal;
+    var total=client+internal;   // worked hours (PTO excluded)
 
     // grid per-row / per-day totals (only present in week view)
     STATE.clients.forEach(function(c){ var el=document.getElementById('rt-'+cssId(c.id)); if(el)el.textContent=(perClient[c.id]||0).toFixed(1); });
@@ -387,10 +395,15 @@
 
     document.getElementById('clientNum').textContent=client.toFixed(1);
     document.getElementById('totalNum').textContent=total.toFixed(1);
-    document.getElementById('internalNote').textContent = internal>0 ? ('+ '+internal.toFixed(1)+' internal') : '';
-    var cap=Number(STATE.user.weeklyHours)||0; var pct=cap>0?Math.round(total/cap*100):0;
+    var noteParts=[]; if(internal>0) noteParts.push('+ '+internal.toFixed(1)+' internal'); if(pto>0) noteParts.push(pto.toFixed(1)+' PTO');
+    document.getElementById('internalNote').textContent = noteParts.join('  ·  ');
+
+    var wh=Number(STATE.user.weeklyHours)||0;
+    var cap=Math.max(0, wh-pto);                                        // PTO reduces available capacity
+    var pct=cap>0?Math.round(total/cap*100):0;
     var bar=document.getElementById('capBar'); if(bar){ bar.style.width=Math.min(100,pct)+'%'; bar.className=pct>100?'over':''; }
-    var ct=document.getElementById('capText'); if(ct)ct.textContent=cap>0?pct+'% of your '+cap+'-hr weekly capacity (total)':'';
+    var ct=document.getElementById('capText');
+    if(ct)ct.textContent = wh>0 ? (pct+'% of your '+cap+'-hr capacity'+(pto>0?' ('+wh+' − '+pto+' PTO)':' this week')) : '';
   }
   function cssId(id){ return String(id).replace(/"/g,''); }
 
