@@ -1,0 +1,3 @@
+# clasp local config — never commit (contains scriptId / OAuth token)
+.clasp.json
+.clasprc.json
