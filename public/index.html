@@ -35,6 +35,8 @@
   .chip .x{border:none;background:#eef0f3;color:#6b7580;width:22px;height:22px;border-radius:50%;cursor:pointer;font-size:15px;line-height:1;padding:0;}
   .chip .x:hover{background:#e0e3e7;}
   .addhint{font-size:12px;color:var(--muted);margin-top:6px;}
+  .offbtn{font:inherit;font-size:12px;font-weight:600;color:#6b5a8a;background:#f6f4fb;border:1px solid #d9d2e8;border-radius:8px;padding:7px 11px;cursor:pointer;}
+  .offbtn:hover{background:#efeaf7;}
 
   /* rows (Today view) */
   .row{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);}
@@ -214,6 +216,7 @@
           '<button id="vToday" class="'+(STATE.view==='today'?'on':'')+'">Today</button>'+
           '<button id="vWeek" class="'+(STATE.view==='week'?'on':'')+'">Week grid</button>'+
         '</div>'+
+        '<button class="offbtn" id="offBtn" type="button" title="Mark the whole week as PTO">Off all week</button>'+
         '<div class="spacer"></div>'+
         '<label>Week <select id="weekSel">'+weekOptions()+'</select></label>'+
         '<span class="sub" id="submitState"></span>'+
@@ -238,6 +241,7 @@
 
     document.getElementById('vToday').addEventListener('click',function(){ switchView('today'); });
     document.getElementById('vWeek').addEventListener('click',function(){ switchView('week'); });
+    document.getElementById('offBtn').addEventListener('click',markWeekOff);
     document.getElementById('weekSel').addEventListener('change',function(){ load(this.value); });
     var ds=document.getElementById('daySel'); if(ds) ds.addEventListener('change',function(){ STATE.pickDay=this.value; draw(); recalc(); });
     var wk=document.getElementById('wkndChk'); if(wk) wk.addEventListener('change',function(){
@@ -252,6 +256,24 @@
   }
 
   function switchView(v){ STATE.view=v; localStorage.setItem('lt_view',v); draw(); recalc(); }
+
+  // Fill the week with PTO (Mon–Fri) up to the person's weekly hours, and clear
+  // any other hours for the week — a one-click "I'm off this week".
+  function markWeekOff(){
+    var wh=Number(STATE.user.weeklyHours)||0;
+    if(wh<=0){ alert('No weekly hours are set for you yet — ask Aric.'); return; }
+    if(!confirm('Mark the whole week as PTO?\nThis sets PTO to your full weekly hours ('+wh+') across Mon–Fri and clears any other hours for this week.')) return;
+    var workdays=daysOfWeek(STATE.week,false);   // Mon–Fri of this week
+    var per=Math.round((wh/workdays.length)*100)/100;
+    // every date currently in play for this week
+    var dates={}; STATE.days.forEach(function(d){dates[d]=true;}); workdays.forEach(function(d){dates[d]=true;});
+    STATE.clients.forEach(function(c){ Object.keys(STATE.hours[c.id]||{}).forEach(function(d){dates[d]=true;}); });
+    // clear everything, then lay PTO across the workdays
+    STATE.clients.forEach(function(c){ Object.keys(dates).forEach(function(d){ setCell(c.id,d,0); }); });
+    workdays.forEach(function(d){ setCell('pto',d,per); });
+    draw(); recalc();
+    setStatus('Whole week marked as PTO. Save or Submit to record it.','');
+  }
 
   // ---- add-a-client (self-service) ----
   function specialRank(id){ return id==='internal'?1:id==='adhoc'?2:id==='pto'?3:0; }
