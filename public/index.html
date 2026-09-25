@@ -37,6 +37,10 @@
   .addhint{font-size:12px;color:var(--muted);margin-top:6px;}
   .offbtn{font:inherit;font-size:12px;font-weight:600;color:#6b5a8a;background:#f6f4fb;border:1px solid #d9d2e8;border-radius:8px;padding:7px 11px;cursor:pointer;}
   .offbtn:hover{background:#efeaf7;}
+  .rmrow{border:none;background:#eef0f3;color:#9aa1a9;width:20px;height:20px;border-radius:50%;cursor:pointer;font-size:13px;line-height:1;padding:0;margin-left:8px;flex:none;}
+  .rmrow:hover{background:#f6d9d6;color:#c5221f;}
+  .rmrow-sp{width:20px;margin-left:8px;flex:none;}
+  table.grid .rmrow{margin-left:6px;}
 
   /* rows (Today view) */
   .row{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);}
@@ -249,6 +253,7 @@
       STATE.days=daysOfWeek(STATE.week,STATE.weekend); draw(); recalc();
     });
     Array.prototype.forEach.call(document.querySelectorAll('[data-cell]'),function(i){ i.addEventListener('input',onInput); });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-unassign]'),function(b){ b.addEventListener('click',function(){ unassignClient(b.getAttribute('data-unassign')); }); });
 
     renderAddBar();
     setSubmitBadge();
@@ -323,6 +328,23 @@
     delete STATE.assignMe[cid];
     draw(); recalc();
   }
+  // Assigned real clients get a per-row remove ("not my account") that unassigns.
+  function canUnassign(c){ return c && c.assigned===true && c.id!=='internal' && c.id!=='adhoc' && c.id!=='pto'; }
+  function hasHours(cid){ var m=STATE.hours[cid]; return !!(m && Object.keys(m).some(function(d){return Number(m[d])>0;})); }
+  function unassignClient(cid){
+    var c=STATE.clients.filter(function(x){return x.id===cid;})[0]; if(!c)return;
+    if(!confirm('Remove “'+c.name+'” from your timesheet?\nIt won’t show up going forward. Any hours you’ve already logged stay, and you can re-add it anytime from “Log another client”.')) return;
+    busy(true); setStatus('Removing…','');
+    apiPost({action:'empUnassign',slug:SLUG,clientId:cid}).then(function(r){
+      busy(false);
+      if(r&&r.ok){
+        c.assigned=false; delete STATE.assignMe[cid];
+        if(!hasHours(cid)) STATE.clients=STATE.clients.filter(function(x){return x.id!==cid;});   // gone if nothing logged
+        draw(); recalc();
+        setStatus('Removed “'+c.name+'” from your sheet.','ok');
+      } else setStatus('Couldn’t remove'+(r&&r.detail?': '+r.detail:'. Try again.'),'');
+    }).catch(function(e){ busy(false); setStatus('Couldn’t remove: '+e,''); });
+  }
   function gatherAssign(){
     return STATE.clients.filter(function(c){ return c.assigned===false && STATE.assignMe[c.id]; }).map(function(c){ return c.id; });
   }
@@ -351,7 +373,9 @@
       return '<div class="row'+(scl?' '+scl:'')+'"><span class="cname">'+esc(c.name)+'</span>'+
         '<input class="hinput" data-cell type="number" min="0" step="0.5" inputmode="decimal" '+
         'data-id="'+esc(c.id)+'" data-date="'+d+'" value="'+vs+'" placeholder="0">'+
-        '<span class="unit">hrs</span></div>';
+        '<span class="unit">hrs</span>'+
+        (canUnassign(c)?'<button class="rmrow" type="button" data-unassign="'+esc(c.id)+'" title="Remove — not my account">×</button>':'<span class="rmrow-sp"></span>')+
+      '</div>';
     }).join('');
     return dayline + rows;
   }
@@ -367,7 +391,9 @@
           'data-id="'+esc(c.id)+'" data-date="'+x+'" value="'+vs+'" placeholder="0"></td>';
       }).join('');
       var scl=specialClass(c.id);
-      return '<tr'+(scl?' class="'+scl+'"':'')+'><td class="cn">'+esc(c.name)+'</td>'+cells+
+      return '<tr'+(scl?' class="'+scl+'"':'')+'><td class="cn">'+esc(c.name)+
+        (canUnassign(c)?' <button class="rmrow" type="button" data-unassign="'+esc(c.id)+'" title="Remove — not my account">×</button>':'')+
+        '</td>'+cells+
         '<td class="rt" id="rt-'+esc(c.id)+'">0.0</td></tr>';
     }).join('');
     var foot='<tr><td class="cn">Daily total</td>'+STATE.days.map(function(x){

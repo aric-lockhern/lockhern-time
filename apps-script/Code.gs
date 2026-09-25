@@ -139,6 +139,7 @@ function handle_(e, p) {
       case 'empLoad':   return json_(empLoad(p.slug, p.week || null));
       case 'empSave':   return json_(empSave(p.slug, p.week, p.days || {}, p.assign || []));
       case 'empSubmit': return json_(empSubmit(p.slug, p.week, p.days || null, p.assign || []));
+      case 'empUnassign': return json_(empUnassign(p.slug, p.clientIds || (p.clientId ? [p.clientId] : [])));
       case 'adminLoad': return json_(adminLoad());
       case 'adminReport': return json_(adminReport(p.period, p.scope, p.userId));
       case 'adminMatrix': return json_(adminMatrix(p.period, p.scope));
@@ -225,6 +226,40 @@ function selfAssign_(ss, userId, clientIds) {
   });
   if (appends.length) sh.getRange(sh.getLastRow() + 1, 1, appends.length, 2).setValues(appends);
   return appends.length;
+}
+
+/** Remove the caller's OWN assignment rows for the given clients. Scoped to this
+ *  user only — never touches anyone else's assignments. Hours are left intact. */
+function empUnassign(slug, clientIds) {
+  var ss = SpreadsheetApp.getActive();
+  var user = teamBySlug_(ss, slug);
+  if (!user) return {ok: false, error: 'unknown_user'};
+  if (!clientIds || !clientIds.length) return {ok: true, removed: 0};
+  var uid = String(user.id);
+  var drop = {};
+  clientIds.forEach(function (c) { drop[String(c)] = true; });
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = ss.getSheetByName(DB.ASSIGN);
+    if (!sh || sh.getLastRow() < 2) return {ok: true, removed: 0};
+    var data = sh.getDataRange().getValues();
+    var keep = [data[0]];
+    var removed = 0;
+    for (var r = 1; r < data.length; r++) {
+      var cid = String(data[r][0]), u = String(data[r][1]);
+      if (u === uid && drop[cid]) { removed++; continue; }   // caller's own assignment for a dropped client
+      keep.push(data[r]);
+    }
+    if (removed) {
+      sh.clearContents();
+      sh.getRange(1, 1, keep.length, keep[0].length).setValues(keep);
+    }
+    return {ok: true, removed: removed};
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /** Submitted = an explicit submission marker exists for this user + week. */
