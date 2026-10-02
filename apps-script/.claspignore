@@ -1,0 +1,5 @@
+# clasp push only sends the API code + manifest to the Apps Script project.
+# (README.md, .gitignore, .clasp.json etc. stay out.)
+**/**
+!Code.gs
+!appsscript.json
