@@ -54,6 +54,9 @@
   .spinner{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
   .bootmsg{color:var(--muted);font-size:14px;}
+  .logincard{background:#fff;border:1px solid var(--line);border-radius:12px;padding:22px 20px;width:300px;max-width:90vw;box-shadow:0 6px 28px rgba(0,0,0,.08);text-align:left;}
+  .logincard input{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;}
+  .logincard button{width:100%;}
   .drillhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;}
   .drillhead h2{margin:0;}
   table.brk{width:100%;border-collapse:collapse;font-size:14px;}
@@ -206,7 +209,15 @@
 </div>
 <div class="toast" id="toast"></div>
 <div id="loadbar"></div>
-<div class="bootwrap" id="boot"><div class="spinner"></div><div class="bootmsg">Loading your dashboard…</div></div>
+<div class="bootwrap hide" id="boot"><div class="spinner"></div><div class="bootmsg">Loading your dashboard…</div></div>
+<div class="bootwrap hide" id="login">
+  <div class="logincard">
+    <div style="font-weight:700;font-size:16px">Time Tracker — Admin</div>
+    <div class="sub" id="loginMsg" style="margin:4px 0 12px">Enter the admin password.</div>
+    <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password">
+    <button class="act" id="loginBtn" style="margin-top:10px">Enter</button>
+  </div>
+</div>
 
 <script>
   var DATA=null, byClientChart=null, capChart=null;
@@ -217,14 +228,38 @@
   var pending=0;
   function startLoad(){ pending++; var b=document.getElementById('loadbar'); if(b)b.classList.add('on'); }
   function endLoad(){ pending=Math.max(0,pending-1); if(pending===0){ var b=document.getElementById('loadbar'); if(b)b.classList.remove('on'); } }
+  // ---- admin password (sent as x-admin-pass; validated by the Netlify proxy) ----
+  function getPass(){ try{ return localStorage.getItem('lt_admin')||''; }catch(e){ return ''; } }
+  function setPass(p){ try{ localStorage.setItem('lt_admin',p); }catch(e){} }
+  function clearPass(){ try{ localStorage.removeItem('lt_admin'); }catch(e){} }
+  function adminHeaders(extra){ var h=extra||{}; h['x-admin-pass']=getPass(); return h; }
+  function authCheck(r){ if(r.status===401){ handleAuthFail(); throw new Error('admin_auth'); } return r; }
+  function handleAuthFail(){ clearPass(); document.getElementById('boot').classList.add('hide'); showLogin('That password didn’t work. Try again.'); }
+  function showLogin(msg){
+    document.getElementById('loginMsg').textContent=msg||'Enter the admin password.';
+    document.getElementById('login').classList.remove('hide');
+    var i=document.getElementById('loginPass'); i.value=''; setTimeout(function(){ i.focus(); },50);
+  }
+  function submitLogin(){
+    var p=document.getElementById('loginPass').value; if(!p)return;
+    setPass(p);
+    document.getElementById('login').classList.add('hide');
+    document.getElementById('boot').classList.remove('hide');
+    boot();
+  }
+  function startAdmin(){
+    if(getPass()){ document.getElementById('boot').classList.remove('hide'); boot(); }
+    else showLogin();
+  }
+
   function api(action, params){
     startLoad();
     var qs=new URLSearchParams(Object.assign({action:action},params||{})).toString();
-    return fetch('/api/proxy?'+qs).then(function(r){return r.json();}).finally(endLoad);
+    return fetch('/api/proxy?'+qs,{headers:adminHeaders()}).then(authCheck).then(function(r){return r.json();}).finally(endLoad);
   }
   function apiPost(payload){
     startLoad();
-    return fetch('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json();}).finally(endLoad);
+    return fetch('/api/proxy',{method:'POST',headers:adminHeaders({'Content-Type':'application/json'}),body:JSON.stringify(payload)}).then(authCheck).then(function(r){return r.json();}).finally(endLoad);
   }
 
   function boot(){
@@ -234,7 +269,7 @@
       DATA=r;
       document.getElementById('note').textContent='Live \u00b7 employee links use ?user=<slug> \u00b7 admin is /admin';
       renderTeam(); renderClients(); renderAssign(); initReports(); initStatus(); initSettings(); renderWorkload();
-    }).catch(function(e){ document.getElementById('boot').classList.add('hide'); document.getElementById('note').textContent='Load error: '+e; });
+    }).catch(function(e){ document.getElementById('boot').classList.add('hide'); if(String(e&&e.message)==='admin_auth')return; document.getElementById('note').textContent='Load error: '+e; });
   }
 
   document.querySelectorAll('nav.tabs button').forEach(function(b){
@@ -632,7 +667,10 @@
   function copy(t){ navigator.clipboard.writeText(t).then(function(){toast('Link copied.');},function(){toast('Copy failed.');}); }
   var toastT; function toast(m){ var el=document.getElementById('toast'); el.textContent=m; el.classList.add('show'); clearTimeout(toastT); toastT=setTimeout(function(){el.classList.remove('show');},1800); }
 
-  boot();
+  document.getElementById('loginBtn').addEventListener('click',submitLogin);
+  document.getElementById('loginPass').addEventListener('keydown',function(e){ if(e.key==='Enter')submitLogin(); });
+
+  startAdmin();
 </script>
 </body>
 </html>
