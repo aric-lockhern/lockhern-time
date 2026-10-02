@@ -90,6 +90,12 @@
   button.submit{font:inherit;font-weight:600;color:#fff;background:var(--accent);border:none;padding:12px 22px;border-radius:10px;cursor:pointer;}
   button.save:disabled,button.submit:disabled{opacity:.5;cursor:default;}
   .msg{padding:40px 16px;text-align:center;color:var(--muted);}
+  .pickrow{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line);text-decoration:none;color:var(--ink);font-size:16px;}
+  .pickrow:last-child{border-bottom:none;}
+  .pickrow:hover{background:#f4f7f5;}
+  .pickrow .arrow{color:var(--muted);}
+  .picksearch{padding:12px 16px;border-bottom:1px solid var(--line);}
+  .picksearch input{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);}
   .skeleton{padding:16px;}
   .skeleton .sk{height:44px;background:#eef0f3;border-radius:8px;margin-bottom:8px;animation:p 1.2s infinite;}
   @keyframes p{50%{opacity:.5;}}
@@ -501,9 +507,33 @@
   function setStatus(t,cls){ var s=document.getElementById('status'); s.textContent=t; s.className='status '+(cls||''); }
   function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
 
+  // Landing page (no ?user): let anyone pick their name → their timesheet.
+  function pickRow(p){
+    return '<a class="pickrow" href="?user='+encodeURIComponent(p.slug)+'"><span>'+esc(p.name)+'</span><span class="arrow">→</span></a>';
+  }
+  function showPicker(){
+    document.getElementById('hello').textContent='Lockhern Time';
+    document.getElementById('sub').textContent='Select your name to open your timesheet.';
+    document.getElementById('savebar').style.display='none';
+    var card=document.getElementById('card');
+    card.innerHTML='<div class="skeleton"><div class="sk"></div><div class="sk"></div><div class="sk"></div></div>';
+    api('empList',{}).then(function(r){
+      var people=(r&&r.ok&&r.people)||[];
+      if(!people.length){ card.innerHTML='<div class="msg">No team members yet. Ask Aric to add you.</div>'; return; }
+      card.innerHTML =
+        '<div class="picksearch"><input id="pickFilter" placeholder="Search your name…" autocomplete="off"></div>'+
+        '<div id="pickList">'+people.map(pickRow).join('')+'</div>';
+      document.getElementById('pickFilter').addEventListener('input',function(){
+        var q=this.value.toLowerCase();
+        document.getElementById('pickList').innerHTML=people.filter(function(p){return String(p.name).toLowerCase().indexOf(q)>=0;}).map(pickRow).join('')
+          || '<div class="msg">No match.</div>';
+      });
+    }).catch(function(e){ card.innerHTML='<div class="msg">Couldn’t load the list.<br><br><span style="font-size:12px;color:#c5221f">'+esc(String(e))+'</span></div>'; });
+  }
+
   document.getElementById('saveBtn').addEventListener('click',save);
   document.getElementById('submitBtn').addEventListener('click',submit);
-  if(!SLUG){ render({ok:false}); } else { load(''); }
+  if(!SLUG){ showPicker(); } else { load(''); }
 </script>
 </body>
 </html>
