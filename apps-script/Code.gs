@@ -158,6 +158,7 @@ function handle_(e, p) {
     ensureEntriesSchema_(SpreadsheetApp.getActive());
     switch (action) {
       case 'empLoad':   return json_(empLoad(p.slug, p.week || null));
+      case 'empList':   return json_(empList());
       case 'empSave':   return json_(empSave(p.slug, p.week, p.days || {}, p.assign || []));
       case 'empSubmit': return json_(empSubmit(p.slug, p.week, p.days || null, p.assign || []));
       case 'empUnassign': return json_(empUnassign(p.slug, p.clientIds || (p.clientId ? [p.clientId] : [])));
@@ -190,6 +191,19 @@ function json_(obj) {
 // ============================================================
 //  EMPLOYEE
 // ============================================================
+// Public roster for the landing-page picker (active team, name + slug).
+function empList() {
+  var hit = cacheGet_('empList'); if (hit) return hit;
+  var ss = SpreadsheetApp.getActive();
+  var people = rows_(ss, DB.TEAM)
+    .filter(function (t) { return t.active !== false; })
+    .map(function (t) { return {name: t.name, slug: t.slug}; })
+    .sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+  var res = {ok: true, people: people};
+  cachePut_('empList', res);
+  return res;
+}
+
 function empLoad(slug, week) {
   var ss = SpreadsheetApp.getActive();
   var user = teamBySlug_(ss, slug);
