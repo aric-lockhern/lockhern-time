@@ -4,22 +4,49 @@
 // Apps Script, returning the JSON.
 //
 // Env vars (Netlify site settings → Environment variables):
-//   GAS_URL     = your Apps Script /exec URL
-//   API_SECRET  = the same secret you set in Script Properties
+//   GAS_URL        = your Apps Script /exec URL
+//   API_SECRET     = the same secret you set in Script Properties
+//   ADMIN_PASSWORD = password that gates the admin console (e.g. founders)
+//
+// Employee actions (empLoad/empSave/empSubmit/empUnassign) are open — they're
+// gated by each person's private ?user=<slug> link. Admin actions require the
+// ADMIN_PASSWORD, sent by the admin page in the `x-admin-pass` header.
+
+var ADMIN_ACTIONS = {
+  adminLoad: 1, adminReport: 1, adminMatrix: 1, adminMonths: 1, adminStatus: 1,
+  addClient: 1, toggleClient: 1, addMember: 1, updateMember: 1, setAssignments: 1,
+  loadSettings: 1, saveSettings: 1, sendTest: 1, sendWelcome: 1
+};
 
 exports.handler = async function (event) {
   const GAS_URL = process.env.GAS_URL;
   const API_SECRET = process.env.API_SECRET;
+  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 
   if (!GAS_URL || !API_SECRET) {
     return json(500, { ok: false, error: 'server_misconfigured' });
   }
 
+  // Parse the POST body once so we can read the action for the auth check.
+  let body = {};
+  if (event.httpMethod === 'POST') {
+    try { body = JSON.parse(event.body || '{}'); } catch (e) { body = {}; }
+  }
+  const params = new URLSearchParams(event.queryStringParameters || {});
+  const action = event.httpMethod === 'POST' ? String(body.action || '') : String(params.get('action') || '');
+
+  // Gate admin actions behind ADMIN_PASSWORD (sent in the x-admin-pass header).
+  if (ADMIN_ACTIONS[action]) {
+    const headers = event.headers || {};
+    const provided = String(headers['x-admin-pass'] || headers['X-Admin-Pass'] || '');
+    if (!ADMIN_PASSWORD || provided !== ADMIN_PASSWORD) {
+      return json(401, { ok: false, error: 'admin_auth' });
+    }
+  }
+
   try {
     let upstream;
     if (event.httpMethod === 'POST') {
-      let body = {};
-      try { body = JSON.parse(event.body || '{}'); } catch (e) { body = {}; }
       body.key = API_SECRET;
       upstream = await fetch(GAS_URL, {
         method: 'POST',
@@ -27,7 +54,6 @@ exports.handler = async function (event) {
         body: JSON.stringify(body),
       });
     } else {
-      const params = new URLSearchParams(event.queryStringParameters || {});
       params.set('key', API_SECRET);
       upstream = await fetch(GAS_URL + '?' + params.toString(), { method: 'GET' });
     }
