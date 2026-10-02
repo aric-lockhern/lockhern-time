@@ -114,6 +114,27 @@ function getSecret_() {
   return PropertiesService.getScriptProperties().getProperty('API_SECRET') || '';
 }
 
+// ---- lightweight cache for read-heavy admin endpoints (~90s) ----
+// Version-namespaced: bustCache_() invalidates every cached entry at once.
+function cacheVer_() {
+  var c = CacheService.getScriptCache();
+  var v = c.get('cacheVer');
+  if (!v) { v = newToken_(); c.put('cacheVer', v, 21600); }
+  return v;
+}
+function bustCache_() {
+  CacheService.getScriptCache().put('cacheVer', newToken_(), 21600);
+}
+function newToken_() { return String(Date.now()) + '-' + Math.random().toString(36).slice(2); }
+function cacheGet_(key) {
+  try { var s = CacheService.getScriptCache().get(cacheVer_() + '|' + key); return s ? JSON.parse(s) : null; }
+  catch (e) { return null; }
+}
+function cachePut_(key, obj, ttl) {
+  try { CacheService.getScriptCache().put(cacheVer_() + '|' + key, JSON.stringify(obj), ttl || 90); }
+  catch (e) { /* value too big or cache unavailable — just skip caching */ }
+}
+
 // ============================================================
 //  ROUTING  — everything comes in as ?action=...
 // ============================================================
@@ -176,7 +197,8 @@ function empLoad(slug, week) {
 
   var wk = week || fridayOf_(new Date());
   var assignedIds = assignmentsFor_(ss, user.id);
-  var hours = entriesFor_(ss, user.id, wk);   // { clientId: { 'yyyy-mm-dd': hours } }
+  var entryRows = rows_(ss, DB.ENTRIES);                     // read Entries ONCE per request
+  var hours = entriesForRows_(entryRows, user.id, wk);       // { clientId: { 'yyyy-mm-dd': hours } }
   var allActive = rows_(ss, DB.CLIENTS).filter(function (c) { return c.active !== false; });
 
   // Show a client row if it's assigned to this user OR they've already logged time
@@ -201,7 +223,7 @@ function empLoad(slug, week) {
     allClients: allActive.map(function (c) { return {id: c.id, name: c.name}; })
                          .sort(function (a, b) { return a.name.localeCompare(b.name); }),
     hours: hours,
-    submitted: isSubmitted_(ss, user.id, wk)
+    submitted: isSubmittedRows_(entryRows, user.id, wk)
   };
 }
 
@@ -264,12 +286,13 @@ function empUnassign(slug, clientIds) {
 
 /** Submitted = an explicit submission marker exists for this user + week. */
 function isSubmitted_(ss, userId, week) {
-  var sh = ss.getSheetByName(DB.ENTRIES);
-  if (!sh || sh.getLastRow() < 2) return false;
+  return isSubmittedRows_(rows_(ss, DB.ENTRIES), userId, week);
+}
+function isSubmittedRows_(entryRows, userId, week) {
   var uid = String(userId), wk = weekStr_(week);
-  var data = sh.getDataRange().getValues();
-  for (var r = 1; r < data.length; r++) {
-    if (String(data[r][1]) === uid && weekStr_(data[r][2]) === wk && String(data[r][3]) === SUBMIT_MARKER) return true;
+  for (var i = 0; i < entryRows.length; i++) {
+    var e = entryRows[i];
+    if (String(e.userId) === uid && weekStr_(e.weekEnding) === wk && String(e.clientId) === SUBMIT_MARKER) return true;
   }
   return false;
 }
@@ -380,27 +403,40 @@ function setSubmitted_(sh, uid, wk, stamp) {
 //  ADMIN
 // ============================================================
 function adminLoad() {
+  var hit = cacheGet_('adminLoad'); if (hit) return hit;
   var ss = SpreadsheetApp.getActive();
-  return {
+  var entryRows = rows_(ss, DB.ENTRIES);        // read Entries ONCE for both status + matrix0
+  var team = rows_(ss, DB.TEAM);
+  var clientRows = rows_(ss, DB.CLIENTS);
+  var weeks = recentFridays_(12);
+  var statusWeek = fridayOf_(new Date());
+  var defaultPeriod = weeks.length > 1 ? weeks[1] : weeks[0];   // previous completed week (admin default)
+  var res = {
     ok: true,
-    clients: rows_(ss, DB.CLIENTS),
-    team: rows_(ss, DB.TEAM),
+    clients: clientRows,
+    team: team,
     assignments: rows_(ss, DB.ASSIGN),
-    weeks: recentFridays_(12),
-    statusWeek: fridayOf_(new Date()),
-    status: adminSubmissionStatus(fridayOf_(new Date())),
-    settings: getSettings_()
+    weeks: weeks,
+    statusWeek: statusWeek,
+    status: submissionStatusFromRows_(entryRows, team.filter(function (t) { return t.active !== false; }), statusWeek),
+    settings: getSettings_(),
+    defaultPeriod: defaultPeriod,
+    matrix0: matrixFromRows_(entryRows, team, clientRows, defaultPeriod, 'week')   // lets the admin boot in ONE call
   };
+  cachePut_('adminLoad', res);
+  return res;
 }
 
 function adminAddClient(name) {
   var ss = SpreadsheetApp.getActive();
   if (!String(name).trim()) return {ok: false, error: 'empty'};
   addClient_(ss, String(name).trim());
+  bustCache_();
   return adminLoad();
 }
 function adminToggleClient(id, active) {
   update_(SpreadsheetApp.getActive(), DB.CLIENTS, id, {active: !!active});
+  bustCache_();
   return adminLoad();
 }
 function adminAddMember(name, type, weeklyHours, email) {
@@ -408,10 +444,12 @@ function adminAddMember(name, type, weeklyHours, email) {
   if (!String(name).trim()) return {ok: false, error: 'empty'};
   var wh = parseFloat(weeklyHours) || (type === 'full' ? DEFAULT_FT_HOURS : 0);
   addTeam_(ss, String(name).trim(), String(email || '').trim(), type || 'full', wh);
+  bustCache_();
   return adminLoad();
 }
 function adminUpdateMember(id, patch) {
   update_(SpreadsheetApp.getActive(), DB.TEAM, id, patch);
+  bustCache_();
   return adminLoad();
 }
 function adminSetAssignments(clientId, userIds) {
@@ -428,6 +466,7 @@ function adminSetAssignments(clientId, userIds) {
       var add = userIds.map(function (u) { return [clientId, u]; });
       sh.getRange(sh.getLastRow() + 1, 1, add.length, 2).setValues(add);
     }
+    bustCache_();
     return adminLoad();
   } finally { lock.releaseLock(); }
 }
@@ -441,6 +480,7 @@ function adminSaveSettings(patch) {
   var clean = {};
   allow.forEach(function (k) { if (patch.hasOwnProperty(k)) clean[k] = patch[k]; });
   var s = saveSettings_(clean);
+  bustCache_();
   return {ok: true, settings: s};
 }
 
@@ -682,14 +722,20 @@ function adminReport(period, scope, userId) {
  *           matrix:{ clientId: { userId: hours } }, weekCount }.
  */
 function adminMatrix(period, scope) {
+  var ck = 'adminMatrix|' + period + '|' + scope;
+  var hit = cacheGet_(ck); if (hit) return hit;
   var ss = SpreadsheetApp.getActive();
-  var team = rows_(ss, DB.TEAM);
+  var res = matrixFromRows_(rows_(ss, DB.ENTRIES), rows_(ss, DB.TEAM), rows_(ss, DB.CLIENTS), period, scope);
+  cachePut_(ck, res);
+  return res;
+}
+function matrixFromRows_(entryRows, team, clientRows, period, scope) {
   var teamById = {};
   team.forEach(function (t) { teamById[String(t.id)] = t; });
   var clientName = {internal: 'Internal', adhoc: 'Ad hoc support', pto: 'PTO / time off'};
-  rows_(ss, DB.CLIENTS).forEach(function (c) { clientName[String(c.id)] = c.name; });
+  clientRows.forEach(function (c) { clientName[String(c.id)] = c.name; });
 
-  var raw = rows_(ss, DB.ENTRIES).filter(function (e) {
+  var raw = entryRows.filter(function (e) {
     if (String(e.clientId) === SUBMIT_MARKER) return false;
     // Month scope buckets by the entry's calendar DAY (no week-overlap); week scope by week-ending.
     return scope === 'month' ? entryMonth_(e) === period : weekStr_(e.weekEnding) === period;
@@ -734,6 +780,7 @@ function adminMatrix(period, scope) {
 }
 
 function adminMonths() {
+  var hit = cacheGet_('adminMonths'); if (hit) return hit;
   var ss = SpreadsheetApp.getActive();
   var set = {};
   rows_(ss, DB.ENTRIES).forEach(function (e) {
@@ -743,26 +790,29 @@ function adminMonths() {
   });
   var arr = Object.keys(set).sort().reverse();
   if (!arr.length) arr = [new Date().toISOString().substring(0, 7)];
+  cachePut_('adminMonths', arr);
   return arr;
 }
 
 /** Submission status = the explicit submit marker per person for the week. */
 function adminSubmissionStatus(week) {
+  var ck = 'adminStatus|' + weekStr_(week);
+  var hit = cacheGet_(ck); if (hit) return hit;
   var ss = SpreadsheetApp.getActive();
   var team = rows_(ss, DB.TEAM).filter(function (t) { return t.active !== false; });
+  var res = submissionStatusFromRows_(rows_(ss, DB.ENTRIES), team, week);
+  cachePut_(ck, res);
+  return res;
+}
+function submissionStatusFromRows_(entryRows, team, week) {
   var wk = weekStr_(week);
   var submittedAt = {};
-  var sh = ss.getSheetByName(DB.ENTRIES);
-  if (sh && sh.getLastRow() >= 2) {
-    var data = sh.getDataRange().getValues();
-    for (var r = 1; r < data.length; r++) {
-      if (weekStr_(data[r][2]) !== wk) continue;
-      if (String(data[r][3]) !== SUBMIT_MARKER) continue;   // only explicit submissions count
-      var uid = String(data[r][1]);
-      var stamp = data[r][5];
-      if (!submittedAt[uid] || String(stamp) > String(submittedAt[uid])) submittedAt[uid] = stamp;
-    }
-  }
+  entryRows.forEach(function (e) {
+    if (String(e.clientId) !== SUBMIT_MARKER) return;   // only explicit submissions count
+    if (weekStr_(e.weekEnding) !== wk) return;
+    var uid = String(e.userId), stamp = e.updatedAt;
+    if (!submittedAt[uid] || String(stamp) > String(submittedAt[uid])) submittedAt[uid] = stamp;
+  });
   return {
     ok: true, week: wk,
     rows: team.map(function (t) {
@@ -831,9 +881,12 @@ function assignmentsFor_(ss, userId) {
 /** Per-week daily hours for one user: { clientId: { 'yyyy-mm-dd': hours } }.
  *  Legacy dateless rows are surfaced under the week's Friday date. */
 function entriesFor_(ss, userId, week) {
+  return entriesForRows_(rows_(ss, DB.ENTRIES), userId, week);
+}
+function entriesForRows_(entryRows, userId, week) {
   var uid = String(userId), wk = weekStr_(week);
   var acc = {};   // clientId -> { date -> {hours, at} }
-  rows_(ss, DB.ENTRIES).forEach(function (e) {
+  entryRows.forEach(function (e) {
     if (String(e.clientId) === SUBMIT_MARKER) return;
     if (String(e.userId) !== uid || weekStr_(e.weekEnding) !== wk) return;
     var cid = String(e.clientId);

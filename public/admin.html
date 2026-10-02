@@ -506,9 +506,14 @@
     else { api('adminMonths').then(function(res){ var months=(res&&res.months)||[]; ps.innerHTML=months.map(function(m){return '<option value="'+m+'">'+m+'</option>';}).join(''); loadMatrix(); }); }
   }
   function setReportsLoading(){ ['kTotal','kClients','kPeople'].forEach(function(id){ document.getElementById(id).textContent='…'; }); }
+  var _usedMatrix0=false;
   function loadMatrix(){
     var scope=document.getElementById('scopeSel').value; var period=document.getElementById('periodSel').value;
     if(!period)return;
+    // First report render reuses the matrix adminLoad already sent (one fewer round-trip).
+    if(!_usedMatrix0 && scope==='week' && DATA.matrix0 && period===DATA.defaultPeriod){
+      _usedMatrix0=true; MATRIX=DATA.matrix0; renderReports(); return;
+    }
     setReportsLoading();
     api('adminMatrix',{period:period,scope:scope}).then(function(m){
       MATRIX=(m&&m.ok)?m:{ok:true,clients:[],people:[],matrix:{},weekCount:1,scope:scope};
