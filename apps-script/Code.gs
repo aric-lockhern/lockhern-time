@@ -599,6 +599,28 @@ function removeReminderTriggers() {
 }
 function esc_(s) { return String(s).replace(/[&<>"]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
 
+/** The calendar month ('yyyy-MM') an entry belongs to — by its actual DAY, so a
+ *  week that straddles a month boundary lands each day in the right month.
+ *  Legacy dateless rows fall back to the week-ending month. */
+function entryMonth_(e) {
+  var d = e.date ? weekStr_(e.date) : weekStr_(e.weekEnding);
+  return d.substring(0, 7);
+}
+
+/** Work-weeks in a calendar month (business days ÷ 5), for month-scope capacity. */
+function businessWeeksInMonth_(period) {
+  var m = /^(\d{4})-(\d{2})$/.exec(String(period || ''));
+  if (!m) return 4.33;
+  var year = Number(m[1]), mon = Number(m[2]) - 1, bd = 0;
+  var d = new Date(year, mon, 1);
+  while (d.getMonth() === mon) {
+    var dow = d.getDay();
+    if (dow !== 0 && dow !== 6) bd++;
+    d.setDate(d.getDate() + 1);
+  }
+  return Math.round((bd / 5) * 100) / 100;
+}
+
 function adminReport(period, scope, userId) {
   var ss = SpreadsheetApp.getActive();
   var team = rows_(ss, DB.TEAM);
@@ -608,8 +630,8 @@ function adminReport(period, scope, userId) {
 
   var entriesRaw = rows_(ss, DB.ENTRIES).filter(function (e) {
     if (String(e.clientId) === SUBMIT_MARKER) return false;
-    var ws = weekStr_(e.weekEnding);
-    var match = scope === 'month' ? ws.indexOf(period) === 0 : ws === period;
+    // Month scope buckets by the entry's calendar DAY (no week-overlap); week scope by week-ending.
+    var match = scope === 'month' ? entryMonth_(e) === period : weekStr_(e.weekEnding) === period;
     if (!match) return false;
     if (userId && userId !== 'all' && String(e.userId) !== String(userId)) return false;
     return true;
@@ -625,9 +647,7 @@ function adminReport(period, scope, userId) {
   });
   var entries = Object.keys(dedup).map(function (k) { return dedup[k]; });
 
-  var weekSet = {};
-  entriesRaw.forEach(function (e) { weekSet[weekStr_(e.weekEnding)] = true; });
-  var weekCount = Math.max(1, Object.keys(weekSet).length);
+  var weekCount = scope === 'month' ? businessWeeksInMonth_(period) : 1;
 
   var byClient = {};
   entries.forEach(function (e) {
@@ -671,8 +691,8 @@ function adminMatrix(period, scope) {
 
   var raw = rows_(ss, DB.ENTRIES).filter(function (e) {
     if (String(e.clientId) === SUBMIT_MARKER) return false;
-    var ws = weekStr_(e.weekEnding);
-    return scope === 'month' ? ws.indexOf(period) === 0 : ws === period;
+    // Month scope buckets by the entry's calendar DAY (no week-overlap); week scope by week-ending.
+    return scope === 'month' ? entryMonth_(e) === period : weekStr_(e.weekEnding) === period;
   });
 
   // Dedup per (user, week, client, DAY); latest wins. Then sum into the matrix.
@@ -685,13 +705,12 @@ function adminMatrix(period, scope) {
   });
 
   var matrix = {};
-  var weekSet = {};
-  raw.forEach(function (e) { weekSet[weekStr_(e.weekEnding)] = true; });
   Object.keys(dedup).forEach(function (k) {
     var e = dedup[k];
     if (!matrix[e.clientId]) matrix[e.clientId] = {};
     matrix[e.clientId][e.userId] = round1_((matrix[e.clientId][e.userId] || 0) + e.hours);
   });
+  var weekCount = scope === 'month' ? businessWeeksInMonth_(period) : 1;
 
   // People: active roster, plus any inactive person who logged time in the period.
   var people = team.filter(function (t) { return t.active !== false; })
@@ -710,7 +729,7 @@ function adminMatrix(period, scope) {
 
   var clients = Object.keys(matrix).map(function (cid) { return {id: cid, name: clientName[cid] || cid}; });
 
-  return {ok: true, scope: scope, period: period, weekCount: Math.max(1, Object.keys(weekSet).length),
+  return {ok: true, scope: scope, period: period, weekCount: weekCount,
           clients: clients, people: people, matrix: matrix};
 }
 
@@ -718,7 +737,8 @@ function adminMonths() {
   var ss = SpreadsheetApp.getActive();
   var set = {};
   rows_(ss, DB.ENTRIES).forEach(function (e) {
-    var m = weekStr_(e.weekEnding).substring(0, 7);
+    if (String(e.clientId) === SUBMIT_MARKER) return;
+    var m = entryMonth_(e);   // calendar month of the day logged
     if (/^\d{4}-\d{2}$/.test(m)) set[m] = true;
   });
   var arr = Object.keys(set).sort().reverse();
