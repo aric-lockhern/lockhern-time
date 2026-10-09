@@ -818,6 +818,17 @@
   }
   function fmtK(n){ n=Number(n)||0; return n>=1000 ? '$'+Math.round(n/1000)+'k' : '$'+Math.round(n); }
   function revMultiple(p){ return p.salary>0 ? (p.total*12/p.salary) : null; }   // managed /yr ÷ salary
+  function revNormName(s){ return String(s).toLowerCase().replace(/[^a-z0-9]+/g,''); }
+  // Parse "Client name <tab/spaces> amount" — amount is the last column; lines without a number are skipped.
+  function revParseLine(line){
+    line=String(line).replace(/\s+$/,''); if(!line.trim()) return null;
+    var name, amtStr, i=line.lastIndexOf('\t');
+    if(i>=0){ name=line.slice(0,i); amtStr=line.slice(i+1); }
+    else { var m=line.match(/^(.*\S)\s+(\S+)$/); if(!m) return null; name=m[1]; amtStr=m[2]; }
+    var amt=parseFloat(String(amtStr).replace(/[$,]/g,''));
+    if(isNaN(amt)||amt<0) return null;
+    return {name:name.trim(), amount:amt};
+  }
   function ensureRevenue(){
     if(revLoaded) return;
     document.getElementById('revPerson').innerHTML='<div class="card"><div class="muted">Loading revenue…</div></div>';
@@ -971,7 +982,42 @@
       '<div class="sub" style="margin-bottom:10px">For each client: set the monthly retainer, split it across channels ($), and tick who owns each channel. Owner chips show the channel’s ★ specialists and current owners first; use <b>+ others</b> for the rest. Changes save as you go.</div>'+
       '<div id="revClients">'+blocks+'</div></div>';
 
-    document.getElementById('revSetup').innerHTML=channelsCard+clientsCard;
+    var importCard='<div class="card"><h2>Bulk import monthly revenue</h2>'+
+      '<div class="sub" style="margin-bottom:8px">Paste rows of <b>Client name</b> then the <b>amount</b> (tab- or space-separated — straight from a spreadsheet works). It matches names to your clients and sets each monthly retainer; channel splits &amp; owners are left alone. Preview before applying.</div>'+
+      '<textarea id="revPaste" rows="5" style="width:100%;font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box" placeholder="Xero Shoes\t15500&#10;Vericast\t10000"></textarea>'+
+      '<div style="margin-top:8px;display:flex;gap:10px;align-items:center"><button class="act" id="revPrev">Preview</button>'+
+      '<button class="act" id="revApply" style="background:#4a90a4;display:none">Apply</button>'+
+      '<span class="sub" id="revImpMsg"></span></div>'+
+      '<div id="revImpResult" class="sub" style="margin-top:8px"></div></div>';
+
+    document.getElementById('revSetup').innerHTML=importCard+channelsCard+clientsCard;
+
+    // wire bulk import
+    var pendingImport=[];
+    document.getElementById('revPrev').addEventListener('click',function(){
+      var nameToId={}; REV.clients.forEach(function(c){ nameToId[revNormName(c.name)]=c.id; });
+      var matched=[], unmatched=[];
+      document.getElementById('revPaste').value.split(/\r?\n/).forEach(function(line){
+        var p=revParseLine(line); if(!p)return;
+        var id=nameToId[revNormName(p.name)];
+        if(id) matched.push({clientId:id,name:p.name,monthly:p.amount}); else unmatched.push(p);
+      });
+      pendingImport=matched;
+      var html='<b>'+matched.length+'</b> matched'+(unmatched.length?('  ·  <b>'+unmatched.length+'</b> not matched'):'');
+      if(matched.length) html+='<div style="margin-top:6px;max-height:160px;overflow:auto">'+matched.map(function(m){return esc(m.name)+' → '+fmtMoney(m.monthly);}).join('<br>')+'</div>';
+      if(unmatched.length) html+='<div style="margin-top:6px;color:#b3261e">Not matched (add as clients, or fix the name): '+unmatched.map(function(u){return esc(u.name);}).join(', ')+'</div>';
+      document.getElementById('revImpResult').innerHTML=html;
+      document.getElementById('revApply').style.display=matched.length?'inline-block':'none';
+      document.getElementById('revImpMsg').textContent='';
+    });
+    document.getElementById('revApply').addEventListener('click',function(){
+      if(!pendingImport.length)return;
+      document.getElementById('revImpMsg').textContent='Applying…';
+      apiPost({action:'importRevenue',items:pendingImport.map(function(m){return {clientId:m.clientId,monthly:m.monthly};})}).then(function(r){
+        if(r&&r.ok){ var n=pendingImport.length; REV=r; renderRevenue(); toast('Imported '+n+' client(s) ✓'); }
+        else document.getElementById('revImpMsg').textContent='Import failed'+(r&&r.detail?': '+r.detail:'');
+      }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; document.getElementById('revImpMsg').textContent='Import failed: '+e; });
+    });
 
     // wire channels
     document.getElementById('chAdd').addEventListener('click',function(){

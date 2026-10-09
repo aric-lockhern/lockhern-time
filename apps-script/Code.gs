@@ -188,7 +188,7 @@ var MUTATING_ACTIONS = {
   addClient: 1, toggleClient: 1, addMember: 1, updateMember: 1, setAssignments: 1,
   saveSettings: 1,
   saveChannels: 1, saveClientRevenue: 1, saveChannelOwners: 1,
-  saveTeamSkills: 1, saveSalary: 1
+  saveTeamSkills: 1, saveSalary: 1, importRevenue: 1
 };
 
 function handle_(e, p) {
@@ -240,6 +240,7 @@ function route_(action, p) {
     case 'saveChannelOwners': return adminSaveChannelOwners(p.clientId, p.channelId, p.userIds || []);
     case 'saveTeamSkills': return adminSaveTeamSkills(p.userId, p.channelIds || []);
     case 'saveSalary': return adminSaveSalary(p.userId, p.salary);
+    case 'importRevenue': return adminImportRevenue(p.items || []);
     default: return {ok: false, error: 'unknown_action', action: action};
   }
 }
@@ -1025,8 +1026,24 @@ function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owne
         pc.total += share; pc.channels[ch.id] = (pc.channels[ch.id] || 0) + share;
       });
     });
+    // Any retainer not split across channels is "unspecified" — attribute it evenly across the
+    // client's assignees, so a client with just a total (e.g. a bulk import) still shows up per
+    // person. Only when the client has nobody assigned does it sit as unassigned.
+    var remainder = Math.max(0, monthly - allocated);
+    if (remainder > 0) {
+      var assg = (assignees[cid] || []);
+      if (!assg.length) { unassigned += remainder; }
+      else {
+        var rshare = remainder / assg.length;
+        assg.forEach(function (uid) {
+          var b = bucket(uid); b.total += rshare;
+          var pc = b.clients[cid] || (b.clients[cid] = {total: 0, channels: {}});
+          pc.total += rshare; pc.channels[''] = (pc.channels[''] || 0) + rshare;   // '' = Unspecified
+        });
+      }
+    }
     byClient.push({clientId: cid, name: clientName[cid] || cid, monthly: round1_(monthly),
-      allocated: round1_(allocated), unallocated: round1_(monthly - allocated), splits: splitsOut});
+      allocated: round1_(allocated), unallocated: round1_(remainder), splits: splitsOut});
   });
 
   // People to list: active roster first, then any inactive person who still owns revenue.
@@ -1038,7 +1055,7 @@ function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owne
       return {
         clientId: cid, name: clientName[cid] || cid, total: round1_(b.clients[cid].total),
         channels: Object.keys(b.clients[cid].channels).map(function (chid) {
-          return {channelId: chid, name: chName[chid] || chid, amount: round1_(b.clients[cid].channels[chid])};
+          return {channelId: chid, name: chName[chid] || (chid === '' ? 'Unspecified' : chid), amount: round1_(b.clients[cid].channels[chid])};
         })
       };
     }).sort(function (a, b2) { return b2.total - a.total || String(a.name).localeCompare(String(b2.name)); });
@@ -1107,6 +1124,36 @@ function adminSaveClientRevenue(clientId, monthly, notes, splits) {
     });
     ssh.clearContents();
     ssh.getRange(1, 1, keep.length, 3).setValues(keep);
+    bustCache_();
+    return adminRevenue();
+  } finally { lock.releaseLock(); }
+}
+
+/** Bulk-set client monthly retainers. items = [{clientId, monthly}]. Leaves splits/owners alone. */
+function adminImportRevenue(items) {
+  var ss = SpreadsheetApp.getActive();
+  ensureRevenueTabs_(ss);
+  if (!items || !items.length) return adminRevenue();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = ss.getSheetByName(DB.REVENUE), data = sh.getDataRange().getValues();
+    var map = {}, order = [];
+    for (var r = 1; r < data.length; r++) {
+      var id = String(data[r][0]); if (!id) continue;
+      if (!map[id]) order.push(id);
+      map[id] = {monthly: Number(data[r][1] || 0), notes: String(data[r][2] || '')};
+    }
+    items.forEach(function (it) {
+      var cid = String(it.clientId || ''); if (!cid) return;
+      var m = Number(it.monthly); if (isNaN(m) || m < 0) m = 0;
+      if (!map[cid]) { order.push(cid); map[cid] = {monthly: m, notes: ''}; }
+      else map[cid].monthly = m;
+    });
+    var out = [['clientId', 'monthly', 'notes']];
+    order.forEach(function (id) { out.push([id, map[id].monthly, map[id].notes]); });
+    sh.clearContents();
+    sh.getRange(1, 1, out.length, 3).setValues(out);
     bustCache_();
     return adminRevenue();
   } finally { lock.releaseLock(); }
