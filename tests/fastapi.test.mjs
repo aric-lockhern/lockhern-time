@@ -249,3 +249,30 @@ test('revenue: editing the split and channels republishes and re-attributes', as
   const r2 = (await w.fast({ action: 'adminRevenue' }, H)).body;
   assert.ok(!r2.channels.some((c) => c.name === 'Meta'), 'Meta no longer an active channel');
 });
+
+test('revenue: specialties pre-pick the channel owner, and salary shows per person', async () => {
+  const w = await published();
+  const H = { 'x-admin-pass': ADMIN_PASSWORD };
+
+  // Baseline: c1 AI SEO (no explicit owner) splits 2k between its assignees u1 + u2.
+  let r = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  let m = {}; r.byPerson.forEach((p) => { m[p.name] = p.total; });
+  assert.equal(m.Aric, 6000); assert.equal(m.Bea, 7000);
+
+  // Make Aric the AI SEO specialist → c1 AI SEO routes entirely to him (he's one of the assignees).
+  w.g.doPost({ postData: { contents: JSON.stringify({ key: SECRET, action: 'saveTeamSkills', userId: 'u1', channelIds: ['ch_seo'] }) } });
+  await w.flush();
+  r = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.deepStrictEqual(r, plain(w.g.adminRevenue()), 'still matches Apps Script');
+  m = {}; r.byPerson.forEach((p) => { m[p.name] = p.total; });
+  assert.equal(m.Aric, 7000, 'Aric gets all of c1 AI SEO as its specialist');
+  assert.equal(m.Bea, 6000, 'Bea loses her half of AI SEO');
+  assert.deepEqual(r.skills.u1, ['ch_seo']);
+
+  // Salary is stored and surfaced per person (the ×-salary multiple is computed in the page).
+  w.g.doPost({ postData: { contents: JSON.stringify({ key: SECRET, action: 'saveSalary', userId: 'u1', salary: 120000 }) } });
+  await w.flush();
+  r = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.equal(r.salaries.u1, 120000);
+  assert.equal(r.byPerson.find((p) => p.name === 'Aric').salary, 120000);
+});

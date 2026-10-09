@@ -67,10 +67,14 @@
   .chanrow .cn{min-width:120px;font-weight:600;}
   .chanrow input.amt{width:120px;}
   .chanrow .pct{color:var(--muted);font-size:12px;min-width:48px;}
-  .owners{display:flex;flex-wrap:wrap;gap:6px;}
+  .owners{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
   .owners label{font-size:12px;background:var(--chip);border-radius:8px;padding:4px 9px;cursor:pointer;user-select:none;}
   .owners label.on{background:var(--accent-soft);outline:1px solid var(--accent);}
+  .owners label.spec::before{content:"★ ";color:var(--accent);font-size:10px;}
   .owners input{display:none;}
+  .moreown{font:inherit;font-size:12px;color:var(--accent);background:none;border:none;cursor:pointer;padding:4px 6px;}
+  .revgrouphdr{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700;margin:16px 0 2px;padding-top:12px;border-top:1px solid var(--line);}
+  .revgrouphdr:first-child{border-top:none;padding-top:0;margin-top:4px;}
   .chaneditrow{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
   .chaneditrow input{min-width:200px;}
   .revclient{padding:12px 0;border-bottom:1px solid var(--line);}
@@ -169,13 +173,15 @@
       <div class="seg" id="revSeg">
         <button data-v="person" class="on">Revenue by person</button>
         <button data-v="map">Ownership map</button>
-        <button data-v="setup">Setup</button>
+        <button data-v="setup">Client setup</button>
+        <button data-v="team">Team &amp; specialties</button>
       </div>
       <span class="sub" id="revSummary"></span>
     </div>
     <div id="revPerson" class="revview"></div>
     <div id="revMap" class="revview" style="display:none"></div>
     <div id="revSetup" class="revview" style="display:none"></div>
+    <div id="revTeam" class="revview" style="display:none"></div>
   </section>
 
   <section class="panel" id="p-workload">
@@ -800,11 +806,18 @@
   var REV=null, REVVIEW='person', revClient='', revLoaded=false;
   function fmtMoney(n){ return '$'+Math.round(Number(n)||0).toLocaleString(); }
   function revAssignees(cid){ return REV.assignments.filter(function(a){return String(a.clientId)===String(cid);}).map(function(a){return String(a.userId);}); }
+  function revHasSkill(uid,chid){ return ((REV.skills||{})[String(uid)]||[]).indexOf(String(chid))>=0; }
+  function revSpecialists(chid){ return REV.team.filter(function(t){return revHasSkill(t.id,chid);}).map(function(t){return String(t.id);}); }
+  // Mirrors the server: explicit owners, else assignees, narrowed to specialists among them when any.
   function revEffOwners(cid,chid){
     var o=REV.owners[cid]&&REV.owners[cid][chid];
     if(o&&o.length) return o.map(String);
-    return revAssignees(cid);
+    var assg=revAssignees(cid);
+    var spec=assg.filter(function(u){return revHasSkill(u,chid);});
+    return spec.length?spec:assg;
   }
+  function fmtK(n){ n=Number(n)||0; return n>=1000 ? '$'+Math.round(n/1000)+'k' : '$'+Math.round(n); }
+  function revMultiple(p){ return p.salary>0 ? (p.total*12/p.salary) : null; }   // managed /yr ÷ salary
   function ensureRevenue(){
     if(revLoaded) return;
     document.getElementById('revPerson').innerHTML='<div class="card"><div class="muted">Loading revenue…</div></div>';
@@ -818,7 +831,7 @@
   function setRevView(v){
     REVVIEW=v;
     document.querySelectorAll('#revSeg button').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-v')===v); });
-    ['person','map','setup'].forEach(function(k){ document.getElementById('rev'+k.charAt(0).toUpperCase()+k.slice(1)).style.display = (k===v?'':'none'); });
+    ['person','map','setup','team'].forEach(function(k){ document.getElementById('rev'+k.charAt(0).toUpperCase()+k.slice(1)).style.display = (k===v?'':'none'); });
     renderRevenue();
   }
   document.querySelectorAll('#revSeg button').forEach(function(b){ b.addEventListener('click',function(){ setRevView(b.getAttribute('data-v')); }); });
@@ -829,13 +842,17 @@
     document.getElementById('revSummary').textContent=fmtMoney(t.attributed)+' / mo attributed to people'+(REV.unassigned>0?('  ·  '+fmtMoney(REV.unassigned)+' on channels with no owner'):'');
     if(REVVIEW==='person') renderRevPerson();
     else if(REVVIEW==='map') renderRevMap();
+    else if(REVVIEW==='team') renderRevTeam();
     else renderRevSetup();
   }
 
   function renderRevPerson(){
     var t=REV.totals||{}, max=REV.byPerson.reduce(function(m,p){return Math.max(m,p.total);},0)||1;
+    var anySalary=REV.byPerson.some(function(p){return p.salary>0;});
     var rows=REV.byPerson.map(function(p){
       var pct=Math.round(p.total/max*100);
+      var mult=revMultiple(p);
+      var multCell=mult==null?'<span class="muted">—</span>':('<b>'+mult.toFixed(1)+'×</b>');
       var detail=p.clients.length
         ? p.clients.map(function(c){
             var chans=c.channels.map(function(ch){return esc(ch.name)+' '+fmtMoney(ch.amount);}).join('  ·  ');
@@ -843,9 +860,12 @@
           }).join('')
         : '<div class="muted">No revenue attributed.</div>';
       return '<tr class="person" data-id="'+esc(p.id)+'"><td>'+esc(p.name)+'</td>'+
-        '<td class="num">'+fmtMoney(p.total)+'</td><td class="num">'+p.count+'</td>'+
-        '<td style="min-width:120px"><div class="revbar"><i style="width:'+pct+'%"></i></div></td></tr>'+
-        '<tr class="detail" data-for="'+esc(p.id)+'" style="display:none"><td colspan="4">'+detail+'</td></tr>';
+        '<td class="num">'+fmtMoney(p.total)+'</td>'+
+        '<td class="num">'+(p.salary>0?fmtK(p.salary):'<span class="muted">—</span>')+'</td>'+
+        '<td class="num">'+multCell+'</td>'+
+        '<td class="num">'+p.count+'</td>'+
+        '<td style="min-width:110px"><div class="revbar"><i style="width:'+pct+'%"></i></div></td></tr>'+
+        '<tr class="detail" data-for="'+esc(p.id)+'" style="display:none"><td colspan="6">'+detail+'</td></tr>';
     }).join('');
     document.getElementById('revPerson').innerHTML=
       '<div class="card"><div class="revkpi">'+
@@ -855,10 +875,56 @@
         (REV.unassigned>0?'<div><div class="n"><span class="warnpill">'+fmtMoney(REV.unassigned)+'</span></div><div class="l">No channel owner</div></div>':'')+
       '</div></div>'+
       '<div class="card"><h2>Managed revenue by person</h2>'+
-        '<div class="sub" style="margin-bottom:8px">Each channel’s dollars go to the people who own it (defaulting to the client’s assignees). Click a person to see the breakdown.</div>'+
-        '<table class="rev"><thead><tr><th>Person</th><th class="num">Managed / mo</th><th class="num">Clients</th><th>Share</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+        '<div class="sub" style="margin-bottom:8px">Each channel’s dollars go to the people who own it. <b>×</b> is managed revenue annualized ÷ salary. Set salary &amp; specialties on the Team tab. Click a person for the breakdown.</div>'+
+        '<table class="rev"><thead><tr><th>Person</th><th class="num">Managed / mo</th><th class="num">Salary / yr</th><th class="num">× salary</th><th class="num">Clients</th><th>Share</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+        (anySalary?'':'<div class="sub" style="margin-top:8px">Add salaries on the <b>Team &amp; specialties</b> tab to see the ×-salary multiple.</div>')+
+      '</div>';
     document.querySelectorAll('#revPerson tr.person').forEach(function(tr){
       tr.addEventListener('click',function(){ var d=document.querySelector('#revPerson tr.detail[data-for="'+tr.getAttribute('data-id')+'"]'); if(d)d.style.display=(d.style.display==='none'?'table-row':'none'); });
+    });
+  }
+
+  // Team & specialties: per person, annual salary + which channels they specialize in.
+  function renderRevTeam(){
+    var chans=REV.channels;
+    var rows=REV.team.map(function(t){
+      var sk=(REV.skills||{})[String(t.id)]||[];
+      var sal=(REV.salaries||{})[String(t.id)]||0;
+      var chips=chans.map(function(ch){
+        var on=sk.indexOf(String(ch.id))>=0;
+        return '<label class="'+(on?'on':'')+'"><input type="checkbox" data-u="'+esc(t.id)+'" data-ch="'+esc(ch.id)+'"'+(on?' checked':'')+'>'+esc(ch.name)+'</label>';
+      }).join('');
+      return '<tr><td>'+esc(t.name)+(t.type==='free'?' <span class="muted" style="font-size:11px">(freelancer)</span>':'')+'</td>'+
+        '<td class="num">$ <input class="amt tsal" data-u="'+esc(t.id)+'" type="number" min="0" step="1000" value="'+(sal||'')+'" placeholder="0"></td>'+
+        '<td><span class="owners tskills" data-u="'+esc(t.id)+'">'+chips+'</span></td>'+
+        '<td class="csaved" data-savefor="'+esc(t.id)+'"></td></tr>';
+    }).join('');
+    document.getElementById('revTeam').innerHTML=
+      '<div class="card"><h2>Team &amp; specialties</h2>'+
+      '<div class="sub" style="margin-bottom:10px">Each person’s <b>annual salary</b> (for the managed-revenue-vs-salary view) and the <b>channels they specialize in</b>. Specialties pre-pick the right owner when a client’s channel has no one assigned to it explicitly. Saves as you go.</div>'+
+      (chans.length?'':'<div class="muted" style="margin-bottom:10px">Add channels on Client setup first.</div>')+
+      '<table class="rev"><thead><tr><th>Person</th><th class="num">Salary / yr</th><th>Specialties</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+
+    document.querySelectorAll('#revTeam .tsal').forEach(function(inp){
+      var uid=inp.getAttribute('data-u'), timer=null;
+      function save(){
+        var cell=document.querySelector('#revTeam .csaved[data-savefor="'+uid+'"]'); if(cell)cell.textContent='Saving…';
+        apiPost({action:'saveSalary',userId:uid,salary:Number(inp.value)||0})
+          .then(function(r){ if(r&&r.ok){ REV=r; if(cell)cell.textContent='Saved ✓'; } else if(cell)cell.textContent='Save failed'; })
+          .catch(function(e){ if(String(e&&e.message)==='admin_auth')return; if(cell)cell.textContent='Save failed'; });
+      }
+      inp.addEventListener('change',function(){ clearTimeout(timer); timer=setTimeout(save,500); });
+    });
+    document.querySelectorAll('#revTeam .tskills input').forEach(function(cb){
+      cb.addEventListener('change',function(){
+        var uid=cb.getAttribute('data-u'), picks=[];
+        document.querySelectorAll('#revTeam .tskills input[data-u="'+uid+'"]').forEach(function(x){ if(x.checked)picks.push(x.getAttribute('data-ch')); });
+        cb.closest('label').classList.toggle('on',cb.checked);
+        var cell=document.querySelector('#revTeam .csaved[data-savefor="'+uid+'"]'); if(cell)cell.textContent='Saving…';
+        apiPost({action:'saveTeamSkills',userId:uid,channelIds:picks})
+          .then(function(r){ if(r&&r.ok){ REV=r; if(cell)cell.textContent='Saved ✓'; } else if(cell)cell.textContent='Save failed'; })
+          .catch(function(e){ if(String(e&&e.message)==='admin_auth')return; if(cell)cell.textContent='Save failed'; });
+      });
     });
   }
 
@@ -893,12 +959,16 @@
       '<div class="chaneditrow"><input id="chNew" placeholder="Add a channel…"><button class="act" id="chAdd">Add</button>'+
       '<button class="act" id="chSave" style="background:#4a90a4">Save channels</button></div></div>';
 
-    // Every client, inline — no dropdown.
+    // Every client, inline — no dropdown — grouped into "needs revenue" and "set up".
+    function hasRev(c){ return (((REV.revenue[c.id]||{}).monthly)||0)>0; }
+    function section(title,list){ return list.length ? '<div class="revgrouphdr">'+esc(title)+' ('+list.length+')</div>'+list.map(revClientBlockHtml).join('') : ''; }
+    var todo=REV.clients.filter(function(c){return !hasRev(c);});
+    var done=REV.clients.filter(hasRev);
     var blocks=REV.clients.length
-      ? REV.clients.map(revClientBlockHtml).join('')
+      ? (section('Needs revenue', todo)+section('Set up', done))
       : '<div class="muted">No active clients yet. Add them on the Clients tab.</div>';
     var clientsCard='<div class="card"><h2>Client revenue &amp; ownership</h2>'+
-      '<div class="sub" style="margin-bottom:10px">For each client: set the monthly retainer, split it across channels ($), and tick who owns each channel (prefilled from assignments). Changes save as you go.</div>'+
+      '<div class="sub" style="margin-bottom:10px">For each client: set the monthly retainer, split it across channels ($), and tick who owns each channel. Owner chips show the channel’s ★ specialists and current owners first; use <b>+ others</b> for the rest. Changes save as you go.</div>'+
       '<div id="revClients">'+blocks+'</div></div>';
 
     document.getElementById('revSetup').innerHTML=channelsCard+clientsCard;
@@ -933,10 +1003,15 @@
     var rows=REV.channels.map(function(ch){
       var amt=Number((r.splits||{})[ch.id]||0);
       var own=revEffOwners(cid,ch.id);
-      var chips=REV.team.map(function(t){
-        var on=own.indexOf(String(t.id))>=0;
-        return '<label class="'+(on?'on':'')+'"><input type="checkbox" data-ch="'+esc(ch.id)+'" data-u="'+esc(t.id)+'"'+(on?' checked':'')+'>'+esc(t.name)+'</label>';
-      }).join('');
+      function chip(t){
+        var on=own.indexOf(String(t.id))>=0, sp=revHasSkill(t.id,ch.id);
+        return '<label class="'+(on?'on':'')+(sp?' spec':'')+'"><input type="checkbox" data-ch="'+esc(ch.id)+'" data-u="'+esc(t.id)+'"'+(on?' checked':'')+'>'+esc(t.name)+'</label>';
+      }
+      var shown={}; own.forEach(function(u){shown[u]=1;}); revSpecialists(ch.id).forEach(function(u){shown[u]=1;});
+      var primary=REV.team.filter(function(t){return shown[String(t.id)];});
+      var others=REV.team.filter(function(t){return !shown[String(t.id)];});
+      var chips=primary.map(chip).join('')+
+        (others.length?'<button type="button" class="moreown">+ '+others.length+' others</button><span class="morewrap" style="display:none">'+others.map(chip).join('')+'</span>':'');
       return '<div class="chanrow"><span class="cn">'+esc(ch.name)+'</span>'+
         '<span>$ <input class="amt camt" data-ch="'+esc(ch.id)+'" type="number" min="0" step="100" value="'+(amt||'')+'" placeholder="0"></span>'+
         '<span class="pct" data-pctfor="'+esc(ch.id)+'"></span>'+
@@ -974,6 +1049,9 @@
     function saveSoon(){ clearTimeout(timer); saved.textContent='…'; timer=setTimeout(saveNow,700); }
     monthlyEl.addEventListener('input',recalc); monthlyEl.addEventListener('change',saveSoon);
     block.querySelectorAll('.camt').forEach(function(inp){ inp.addEventListener('input',recalc); inp.addEventListener('change',saveSoon); });
+    block.querySelectorAll('.moreown').forEach(function(btn){
+      btn.addEventListener('click',function(){ var w=btn.nextElementSibling; if(w){ w.style.display='inline'; } btn.style.display='none'; });
+    });
     block.querySelectorAll('.owners input').forEach(function(cb){
       cb.addEventListener('change',function(){
         var chid=cb.getAttribute('data-ch'), picks=[];
