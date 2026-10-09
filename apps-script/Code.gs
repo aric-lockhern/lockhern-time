@@ -923,7 +923,7 @@ function adminRevenue() {
 
   var channelRows = rows_(ss, DB.CHANNELS);
   var channels = channelRows.filter(function (c) { return c.active !== false; })
-    .map(function (c) { return {id: String(c.id), name: c.name}; });
+    .map(function (c) { return {id: String(c.id), name: c.name, everyone: c.everyone === true || c.everyone === 'TRUE' || c.everyone === 'true'}; });
   var teamAll = rows_(ss, DB.TEAM);
   var clientRows = rows_(ss, DB.CLIENTS);
   var assignments = rows_(ss, DB.ASSIGN).map(function (a) { return {clientId: String(a.clientId), userId: String(a.userId)}; });
@@ -1001,12 +1001,14 @@ function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owne
     if (!activeId[uid]) return;
     (skills[uid] || []).forEach(function (chid) { (specByCh[chid] = specByCh[chid] || []).push(uid); });
   });
-  // Explicit per-client owners win. Otherwise a channel defaults to its specialists (the people who
-  // manage that channel). Only when no one specializes in it does it fall back to the client's
-  // assignees, so nothing is stranded before specialties are set.
+  var everyoneCh = {}; channels.forEach(function (c) { everyoneCh[c.id] = !!c.everyone; });
+  // Explicit per-client owners win. An "everyone" channel (e.g. Paid Search) defaults to the whole
+  // account team — the client's assignees. Otherwise a channel defaults to its specialists (the
+  // people who manage it), falling back to the client's assignees when no one specializes in it.
   function effOwners(cid, chid) {
     var o = owners[cid] && owners[cid][chid];
     if (o && o.length) return o.slice();
+    if (everyoneCh[chid]) return (assignees[cid] || []).slice();
     if ((specByCh[chid] || []).length) return specByCh[chid].slice();
     return (assignees[cid] || []).slice();
   }
@@ -1089,17 +1091,21 @@ function adminSaveChannels(list) {
   lock.waitLock(20000);
   try {
     var existing = rows_(ss, DB.CHANNELS);
-    var seen = {}, out = [['id', 'name', 'active']];
+    var seen = {}, out = [['id', 'name', 'active', 'everyone']];
     (list || []).forEach(function (c) {
       var name = String(c.name || '').trim(); if (!name) return;
       var id = c.id ? String(c.id) : Utilities.getUuid();
       seen[id] = true;
-      out.push([id, name, c.active === false ? false : true]);
+      out.push([id, name, c.active === false ? false : true, c.everyone === true || c.everyone === 'TRUE' || c.everyone === 'true']);
     });
-    existing.forEach(function (e) { if (!seen[String(e.id)]) out.push([String(e.id), e.name, false]); });
+    // Keep channels dropped from the list as inactive, preserving their everyone flag.
+    existing.forEach(function (e) {
+      if (seen[String(e.id)]) return;
+      out.push([String(e.id), e.name, false, e.everyone === true || e.everyone === 'TRUE' || e.everyone === 'true']);
+    });
     var sh = ss.getSheetByName(DB.CHANNELS);
     sh.clearContents();
-    sh.getRange(1, 1, out.length, 3).setValues(out);
+    sh.getRange(1, 1, out.length, 4).setValues(out);
     bustCache_();
     return adminRevenue();
   } finally { lock.releaseLock(); }

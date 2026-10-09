@@ -810,10 +810,13 @@
   function revAssignees(cid){ return REV.assignments.filter(function(a){return String(a.clientId)===String(cid);}).map(function(a){return String(a.userId);}); }
   function revHasSkill(uid,chid){ return ((REV.skills||{})[String(uid)]||[]).indexOf(String(chid))>=0; }
   function revSpecialists(chid){ return REV.team.filter(function(t){return revHasSkill(t.id,chid);}).map(function(t){return String(t.id);}); }
-  // Mirrors the server: explicit owners, else the channel's specialists, else the client's assignees.
+  function revChannelEveryone(chid){ var c=REV.channels.filter(function(x){return String(x.id)===String(chid);})[0]; return !!(c&&c.everyone); }
+  // Mirrors the server: explicit owners; an "everyone" channel defaults to the client's assignees;
+  // otherwise the channel's specialists, else the client's assignees.
   function revEffOwners(cid,chid){
     var o=REV.owners[cid]&&REV.owners[cid][chid];
     if(o&&o.length) return o.map(String);
+    if(revChannelEveryone(chid)) return revAssignees(cid);
     var spec=revSpecialists(chid);
     if(spec.length) return spec;
     return revAssignees(cid);
@@ -964,10 +967,11 @@
     // Channels editor
     var chans=REV.channels.map(function(c){
       return '<div class="chaneditrow"><input class="chName" data-id="'+esc(c.id)+'" value="'+esc(c.name)+'">'+
+        '<label style="font-size:12px;color:var(--muted)"><input type="checkbox" class="chEvery"'+(c.everyone?' checked':'')+'> everyone</label>'+
         '<button class="link chDel" data-id="'+esc(c.id)+'">Remove</button></div>';
     }).join('');
     var channelsCard='<div class="card"><h2>Channels</h2>'+
-      '<div class="sub" style="margin-bottom:10px">Service lines revenue is split across. Removing one keeps past splits intact but hides it going forward.</div>'+
+      '<div class="sub" style="margin-bottom:10px">Service lines revenue is split across. Tick <b>everyone</b> for a whole-team channel (e.g. Paid Search) — it defaults to all of a client’s assignees instead of just specialists. Removing one keeps past splits intact but hides it going forward.</div>'+
       '<div id="chanList">'+chans+'</div>'+
       '<div class="chaneditrow"><input id="chNew" placeholder="Add a channel…"><button class="act" id="chAdd">Add</button>'+
       '<button class="act" id="chSave" style="background:#4a90a4">Save channels</button></div></div>';
@@ -981,7 +985,7 @@
       ? (section('Needs revenue', todo)+section('Set up', done))
       : '<div class="muted">No active clients yet. Add them on the Clients tab.</div>';
     var clientsCard='<div class="card"><h2>Client revenue &amp; ownership</h2>'+
-      '<div class="sub" style="margin-bottom:10px">For each client: set the monthly retainer, split it across channels ($), and tick who owns each channel. Each channel only lists its ★ specialists and defaults to them — set specialties on <b>Team &amp; specialties</b>. Changes save as you go.</div>'+
+      '<div class="sub" style="margin-bottom:10px">For each client: set the monthly retainer, split it across channels ($), and tick who owns each channel. A specialist channel lists its ★ specialists; an <b>everyone</b> channel (e.g. Paid Search) lists the client’s assignees and defaults to all of them. Changes save as you go.</div>'+
       '<div id="revClients">'+blocks+'</div></div>';
 
     var importCard='<div class="card"><h2>Bulk import monthly revenue</h2>'+
@@ -1026,16 +1030,18 @@
       var v=document.getElementById('chNew').value.trim(); if(!v)return;
       var list=document.getElementById('chanList');
       var div=document.createElement('div'); div.className='chaneditrow';
-      div.innerHTML='<input class="chName" value="'+esc(v)+'"><button class="link chDel">Remove</button>';
+      div.innerHTML='<input class="chName" value="'+esc(v)+'"><label style="font-size:12px;color:var(--muted)"><input type="checkbox" class="chEvery"> everyone</label><button class="link chDel">Remove</button>';
       list.appendChild(div); document.getElementById('chNew').value='';
       div.querySelector('.chDel').addEventListener('click',function(){ div.remove(); });
     });
     document.querySelectorAll('#revSetup .chDel').forEach(function(b){ b.addEventListener('click',function(){ b.closest('.chaneditrow').remove(); }); });
     document.getElementById('chSave').addEventListener('click',function(){
       var list=[];
-      document.querySelectorAll('#chanList .chName').forEach(function(inp){
+      document.querySelectorAll('#chanList .chaneditrow').forEach(function(row){
+        var inp=row.querySelector('.chName'); if(!inp)return;
         var name=inp.value.trim(); if(!name)return;
-        list.push({id:inp.getAttribute('data-id')||'', name:name, active:true});
+        var ev=row.querySelector('.chEvery');
+        list.push({id:inp.getAttribute('data-id')||'', name:name, active:true, everyone:!!(ev&&ev.checked)});
       });
       toast('Saving channels…');
       apiPost({action:'saveChannels',channels:list}).then(function(r){ if(r&&r.ok){ REV=r; renderRevenue(); toast('Channels saved.'); } else toast('Save failed'+(r&&r.detail?': '+r.detail:'')); }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; toast('Save failed: '+e); });
@@ -1055,13 +1061,15 @@
         var on=own.indexOf(String(t.id))>=0, sp=revHasSkill(t.id,ch.id);
         return '<label class="'+(on?'on':'')+(sp?' spec':'')+'"><input type="checkbox" data-ch="'+esc(ch.id)+'" data-u="'+esc(t.id)+'"'+(on?' checked':'')+'>'+esc(t.name)+'</label>';
       }
-      // Options are the channel's specialists (plus anyone explicitly set, so they're visible/removable).
+      // Options: an "everyone" channel lists the client's assignees; a specialist channel lists its
+      // specialists (falling back to assignees when none). Anyone explicitly set is always shown.
       var spec=revSpecialists(ch.id), explicit=(REV.owners[cid]&&REV.owners[cid][ch.id])||[];
-      var poolIds={}; spec.forEach(function(u){poolIds[String(u)]=1;}); explicit.forEach(function(u){poolIds[String(u)]=1;});
+      var base = revChannelEveryone(ch.id) ? revAssignees(cid) : (spec.length ? spec : revAssignees(cid));
+      var poolIds={}; base.forEach(function(u){poolIds[String(u)]=1;}); explicit.forEach(function(u){poolIds[String(u)]=1;});
       var pool=REV.team.filter(function(t){return poolIds[String(t.id)];});
       var chips = pool.length
         ? pool.map(chip).join('')
-        : '<span class="muted" style="font-size:12px;margin-right:4px">No '+esc(ch.name)+' specialist set (Team &amp; specialties) — pick anyone:</span>'+REV.team.map(chip).join('');
+        : '<span class="muted" style="font-size:12px;margin-right:4px">No one assigned — pick anyone:</span>'+REV.team.map(chip).join('');
       return '<div class="chanrow"><span class="cn">'+esc(ch.name)+'</span>'+
         '<span>$ <input class="amt camt" data-ch="'+esc(ch.id)+'" type="number" min="0" step="100" value="'+(amt||'')+'" placeholder="0"></span>'+
         '<span class="pct" data-pctfor="'+esc(ch.id)+'"></span>'+
