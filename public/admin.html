@@ -810,13 +810,13 @@
   function revAssignees(cid){ return REV.assignments.filter(function(a){return String(a.clientId)===String(cid);}).map(function(a){return String(a.userId);}); }
   function revHasSkill(uid,chid){ return ((REV.skills||{})[String(uid)]||[]).indexOf(String(chid))>=0; }
   function revSpecialists(chid){ return REV.team.filter(function(t){return revHasSkill(t.id,chid);}).map(function(t){return String(t.id);}); }
-  // Mirrors the server: explicit owners, else assignees, narrowed to specialists among them when any.
+  // Mirrors the server: explicit owners, else the channel's specialists, else the client's assignees.
   function revEffOwners(cid,chid){
     var o=REV.owners[cid]&&REV.owners[cid][chid];
     if(o&&o.length) return o.map(String);
-    var assg=revAssignees(cid);
-    var spec=assg.filter(function(u){return revHasSkill(u,chid);});
-    return spec.length?spec:assg;
+    var spec=revSpecialists(chid);
+    if(spec.length) return spec;
+    return revAssignees(cid);
   }
   function fmtK(n){ n=Number(n)||0; return n>=1000 ? '$'+Math.round(n/1000)+'k' : '$'+Math.round(n); }
   function revMultiple(p){ return p.salary>0 ? (p.total*12/p.salary) : null; }   // managed /yr ÷ salary
@@ -981,7 +981,7 @@
       ? (section('Needs revenue', todo)+section('Set up', done))
       : '<div class="muted">No active clients yet. Add them on the Clients tab.</div>';
     var clientsCard='<div class="card"><h2>Client revenue &amp; ownership</h2>'+
-      '<div class="sub" style="margin-bottom:10px">For each client: set the monthly retainer, split it across channels ($), and tick who owns each channel. Owner chips show the channel’s ★ specialists and current owners first; use <b>+ others</b> for the rest. Changes save as you go.</div>'+
+      '<div class="sub" style="margin-bottom:10px">For each client: set the monthly retainer, split it across channels ($), and tick who owns each channel. Each channel only lists its ★ specialists and defaults to them — set specialties on <b>Team &amp; specialties</b>. Changes save as you go.</div>'+
       '<div id="revClients">'+blocks+'</div></div>';
 
     var importCard='<div class="card"><h2>Bulk import monthly revenue</h2>'+
@@ -1055,11 +1055,13 @@
         var on=own.indexOf(String(t.id))>=0, sp=revHasSkill(t.id,ch.id);
         return '<label class="'+(on?'on':'')+(sp?' spec':'')+'"><input type="checkbox" data-ch="'+esc(ch.id)+'" data-u="'+esc(t.id)+'"'+(on?' checked':'')+'>'+esc(t.name)+'</label>';
       }
-      var shown={}; own.forEach(function(u){shown[u]=1;}); revSpecialists(ch.id).forEach(function(u){shown[u]=1;});
-      var primary=REV.team.filter(function(t){return shown[String(t.id)];});
-      var others=REV.team.filter(function(t){return !shown[String(t.id)];});
-      var chips=primary.map(chip).join('')+
-        (others.length?'<button type="button" class="moreown">+ '+others.length+' others</button><span class="morewrap" style="display:none">'+others.map(chip).join('')+'</span>':'');
+      // Options are the channel's specialists (plus anyone explicitly set, so they're visible/removable).
+      var spec=revSpecialists(ch.id), explicit=(REV.owners[cid]&&REV.owners[cid][ch.id])||[];
+      var poolIds={}; spec.forEach(function(u){poolIds[String(u)]=1;}); explicit.forEach(function(u){poolIds[String(u)]=1;});
+      var pool=REV.team.filter(function(t){return poolIds[String(t.id)];});
+      var chips = pool.length
+        ? pool.map(chip).join('')
+        : '<span class="muted" style="font-size:12px;margin-right:4px">No '+esc(ch.name)+' specialist set (Team &amp; specialties) — pick anyone:</span>'+REV.team.map(chip).join('');
       return '<div class="chanrow"><span class="cn">'+esc(ch.name)+'</span>'+
         '<span>$ <input class="amt camt" data-ch="'+esc(ch.id)+'" type="number" min="0" step="100" value="'+(amt||'')+'" placeholder="0"></span>'+
         '<span class="pct" data-pctfor="'+esc(ch.id)+'"></span>'+
@@ -1108,9 +1110,6 @@
     });
     monthlyEl.addEventListener('input',recalc); monthlyEl.addEventListener('change',saveSoon);
     block.querySelectorAll('.camt').forEach(function(inp){ inp.addEventListener('input',recalc); inp.addEventListener('change',saveSoon); });
-    block.querySelectorAll('.moreown').forEach(function(btn){
-      btn.addEventListener('click',function(){ var w=btn.nextElementSibling; if(w){ w.style.display='inline'; } btn.style.display='none'; });
-    });
     block.querySelectorAll('.owners input').forEach(function(cb){
       cb.addEventListener('change',function(){
         var chid=cb.getAttribute('data-ch'), picks=[];
