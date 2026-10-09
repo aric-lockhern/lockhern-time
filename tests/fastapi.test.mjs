@@ -211,7 +211,9 @@ test('revenue: fast path matches Apps Script, and channel dollars roll up to the
   assert.deepEqual(byName, { Bea: 7000, Aric: 6000, Cy: 3000 });
   assert.deepEqual(fast.byPerson.map((p) => p.name), ['Bea', 'Aric', 'Cy'], 'sorted by managed revenue');
   assert.equal(fast.unassigned, 0, 'every funded channel has an owner (explicit or fallback)');
-  assert.deepEqual(fast.totals, { monthly: 16000, allocated: 16000, attributed: 16000 });
+  assert.equal(fast.totals.monthly, 16000);
+  assert.equal(fast.totals.distributed, 16000);
+  assert.equal(fast.totals.mismatches, 0);
 
   // Assigning c2's Paid Search explicitly to Cy moves that 6k off the fallback (Bea+Cy).
   w.g.doPost({ postData: { contents: JSON.stringify({
@@ -293,7 +295,8 @@ test('revenue: bulk import sets retainers, and an unsplit remainder goes to the 
   assert.equal(m.Cy, 3000);
   const c1 = r.byClient.find((c) => c.clientId === 'c1');
   assert.equal(c1.monthly, 12000);
-  assert.equal(c1.unallocated, 2000);
+  assert.equal(c1.distributed, 12000, 'the 2k remainder is distributed to assignees, so nothing is left over');
+  assert.equal(c1.mismatch, 0);
   assert.equal(r.revenue.c1.splits.ch_ps, 5000, 'import left the channel splits intact');
 });
 
@@ -332,6 +335,46 @@ test('revenue: an "everyone" channel defaults to the client’s assignees, over 
   assert.equal(m.Aric, 6000, 'Aric: c1 ps 5000 + c1 seo 1000 — not c2 ps');
   assert.equal(m.Bea, 7000, 'Bea: c1 seo 1000 + c1 meta 3000 + c2 ps 3000');
   assert.equal(m.Cy, 3000, 'Cy keeps his half of c2 Paid Search');
+});
+
+test('revenue: fee portions are authoritative, with a total-vs-distribution QA flag', async () => {
+  const w = await published();
+  const H = { 'x-admin-pass': ADMIN_PASSWORD };
+  // Give c1 direct fee portions (u1 6000, u2 3000) against a 10000 retainer → 1000 undistributed.
+  w.g.doPost({ postData: { contents: JSON.stringify({
+    key: SECRET, action: 'saveClientPortions', clientId: 'c1', monthly: 10000, portions: { u1: 6000, u2: 3000 },
+  }) } });
+  await w.flush();
+  const r = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.deepStrictEqual(r, plain(w.g.adminRevenue()));
+  const m = {}; r.byPerson.forEach((p) => { m[p.name] = p.total; });
+  assert.equal(m.Aric, 6000, 'c1 portions override its channel splits');
+  assert.equal(m.Bea, 6000, 'c1 3000 + c2 Paid Search 3000');
+  assert.equal(m.Cy, 3000, 'c2 Paid Search 3000');
+  const c1 = r.byClient.find((c) => c.clientId === 'c1');
+  assert.equal(c1.byPortion, true);
+  assert.equal(c1.monthly, 10000);
+  assert.equal(c1.distributed, 9000);
+  assert.equal(c1.mismatch, 1000, 'QA: 1000 of the retainer is not distributed');
+  assert.ok(r.totals.mismatches >= 1);
+  assert.equal(r.portions.c1.u1, 6000);
+});
+
+test('revenue: importing fee portions replaces the whole table', async () => {
+  const w = await published();
+  const H = { 'x-admin-pass': ADMIN_PASSWORD };
+  w.g.doPost({ postData: { contents: JSON.stringify({
+    key: SECRET, action: 'importFeePortions', items: [{ clientId: 'c1', userId: 'u3', amount: 4000 }],
+  }) } });
+  await w.flush();
+  const r = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.deepStrictEqual(r, plain(w.g.adminRevenue()));
+  assert.equal(r.portions.c1.u3, 4000);
+  assert.ok(!r.portions.c2, 'c2 has no portions → still channel-based');
+  const m = {}; r.byPerson.forEach((p) => { m[p.name] = p.total; });
+  assert.equal(m.Cy, 7000, 'c1 fee portion 4000 + c2 Paid Search 3000');
+  assert.ok(!m.Aric, 'Aric has nothing on c1 now (portions override channels) and isn’t on c2');
+  assert.equal(m.Bea, 3000, 'only c2 Paid Search');
 });
 
 test('revenue: unchecking a client (inactive) removes it from every revenue view', async () => {
