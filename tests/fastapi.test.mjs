@@ -297,6 +297,23 @@ test('revenue: bulk import sets retainers, and an unsplit remainder goes to the 
   assert.equal(r.revenue.c1.splits.ch_ps, 5000, 'import left the channel splits intact');
 });
 
+test('revenue: a channel defaults to its specialists, even ones not assigned to the client', async () => {
+  const w = await published();
+  const H = { 'x-admin-pass': ADMIN_PASSWORD };
+  // Make Aric (u1) the Paid Search specialist. c2's Paid Search has no explicit owner and u1 isn't
+  // even assigned to c2 — but as the PS specialist he now owns it by default.
+  w.g.doPost({ postData: { contents: JSON.stringify({ key: SECRET, action: 'saveTeamSkills', userId: 'u1', channelIds: ['ch_ps'] }) } });
+  await w.flush();
+  const r = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.deepStrictEqual(r, plain(w.g.adminRevenue()));
+  const m = {}; r.byPerson.forEach((p) => { m[p.name] = p.total; });
+  // c1 ps is explicitly u1 (5000); c1 seo no specialist → c1 assignees u1,u2 (1000 each); c1 meta
+  // explicit u2 (3000); c2 ps → specialist u1 (6000). Aric 5000+1000+6000, Bea 1000+3000, Cy 0.
+  assert.equal(m.Aric, 12000);
+  assert.equal(m.Bea, 4000);
+  assert.equal(m.Cy || 0, 0, 'Cy loses c2 Paid Search to the specialist');
+});
+
 test('revenue: unchecking a client (inactive) removes it from every revenue view', async () => {
   const w = await published();
   const H = { 'x-admin-pass': ADMIN_PASSWORD };

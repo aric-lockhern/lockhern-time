@@ -995,15 +995,20 @@ function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owne
     if (t.active !== false) { activeId[id] = true; order.push(id); }
   });
 
-  function hasSkill(uid, chid) { return (skills[uid] || []).indexOf(chid) >= 0; }
-  // Explicit owners win. Otherwise the client's assignees — but if any of them specializes in this
-  // channel, narrow to those specialists, so a channel's dollars land on the right person by default.
+  // Who specializes in each channel (active team only) — these are the people who manage it.
+  var specByCh = {};
+  Object.keys(skills).forEach(function (uid) {
+    if (!activeId[uid]) return;
+    (skills[uid] || []).forEach(function (chid) { (specByCh[chid] = specByCh[chid] || []).push(uid); });
+  });
+  // Explicit per-client owners win. Otherwise a channel defaults to its specialists (the people who
+  // manage that channel). Only when no one specializes in it does it fall back to the client's
+  // assignees, so nothing is stranded before specialties are set.
   function effOwners(cid, chid) {
     var o = owners[cid] && owners[cid][chid];
     if (o && o.length) return o.slice();
-    var assg = (assignees[cid] || []).slice();
-    var specialists = assg.filter(function (u) { return hasSkill(u, chid); });
-    return specialists.length ? specialists : assg;
+    if ((specByCh[chid] || []).length) return specByCh[chid].slice();
+    return (assignees[cid] || []).slice();
   }
 
   var per = {};
