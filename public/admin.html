@@ -82,7 +82,9 @@
   .rchead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px;}
   .rchead .cname{font-weight:700;min-width:160px;font-size:15px;}
   .rchead .alloc{font-size:12px;color:var(--muted);}
-  .rchead .csaved{font-size:12px;color:var(--accent);margin-left:auto;min-width:60px;text-align:right;}
+  .rchead .csaved{font-size:12px;color:var(--accent);min-width:60px;text-align:right;}
+  .rchead .rcdel{font:inherit;font-size:12px;background:none;border:none;color:#b06a5f;cursor:pointer;margin-left:auto;padding:4px 2px;}
+  .rchead .rcdel:hover{color:#b3261e;text-decoration:underline;}
   /* top progress bar — visible whenever a request is in flight */
   #loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:9999;opacity:0;transition:opacity .15s;pointer-events:none;overflow:hidden;}
   #loadbar.on{opacity:1;}
@@ -1066,7 +1068,8 @@
     return '<div class="revclient" data-cid="'+esc(cid)+'">'+
       '<div class="rchead"><span class="cname">'+esc(c.name)+'</span>'+
         '<span>$ <input class="amt cmonthly" type="number" min="0" step="100" value="'+(r.monthly||'')+'" placeholder="0"> /mo</span>'+
-        '<span class="alloc"></span><span class="csaved"></span></div>'+
+        '<span class="alloc"></span><span class="csaved"></span>'+
+        '<button class="rcdel" type="button" title="Remove this client (deactivates it everywhere)">Remove</button></div>'+
       rows+'</div>';
   }
 
@@ -1093,6 +1096,16 @@
         .catch(function(e){ if(String(e&&e.message)==='admin_auth')return; saved.textContent='Save failed'; });
     }
     function saveSoon(){ clearTimeout(timer); saved.textContent='…'; timer=setTimeout(saveNow,700); }
+    var del=block.querySelector('.rcdel');
+    if(del) del.addEventListener('click',function(){
+      var cname=block.querySelector('.cname').textContent;
+      if(!confirm('Remove “'+cname+'”?\nThis unchecks (deactivates) the client — it drops off the revenue views and off the timesheet, exactly like unchecking it on the Clients tab. Any revenue you entered is kept and comes back if you re-activate it.')) return;
+      del.textContent='Removing…';
+      apiPost({action:'toggleClient',id:cid,active:false}).then(function(r){
+        if(r&&r.ok){ api('adminRevenue').then(function(rv){ if(rv&&rv.ok){ REV=rv; renderRevenue(); toast('Removed “'+cname+'”'); } }); }
+        else { del.textContent='Remove'; toast('Remove failed'+(r&&r.detail?': '+r.detail:'')); }
+      }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; del.textContent='Remove'; toast('Remove failed: '+e); });
+    });
     monthlyEl.addEventListener('input',recalc); monthlyEl.addEventListener('change',saveSoon);
     block.querySelectorAll('.camt').forEach(function(inp){ inp.addEventListener('input',recalc); inp.addEventListener('change',saveSoon); });
     block.querySelectorAll('.moreown').forEach(function(btn){
