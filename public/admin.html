@@ -43,6 +43,7 @@
   canvas{max-height:320px;}
   table.brk tr.clickable{cursor:pointer;}
   table.brk tr.clickable:hover td{background:#f4f7f5;}
+  .slownote{margin:10px 0 0;padding:10px 14px;background:#fff8ec;border:1px solid #f0e2c0;border-radius:10px;font-size:13px;color:#8a6d1f;}
   /* top progress bar — visible whenever a request is in flight */
   #loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:9999;opacity:0;transition:opacity .15s;pointer-events:none;overflow:hidden;}
   #loadbar.on{opacity:1;}
@@ -75,6 +76,7 @@
 <div class="wrap">
   <h1>Time Tracker — Admin</h1>
   <div class="sub" id="note">Loading…</div>
+  <div class="slownote" id="slowNote" style="display:none"></div>
   <nav class="tabs">
     <button data-tab="reports" class="active">Reports</button>
     <button data-tab="workload">Workload</button>
@@ -252,14 +254,79 @@
     else showLogin();
   }
 
+  // ---- Fast read path ---------------------------------------------------------------
+  // Admin reads try the site's own Netlify function first (served from a published snapshot — fast
+  // and reliable) and fall back to Apps Script (via /api/proxy) when it can't answer. The fast path
+  // enforces the SAME ADMIN_PASSWORD gate (x-admin-pass); a wrong password is a real 401, not a
+  // fallback. Writes always go to Apps Script. See apps-script/Publish.gs.
+  var FAST = /^https?:$/.test(location.protocol) ? (location.origin + '/api') : '';
+  var FAST_OFF = false;
+  var FAST_READS = {adminLoad:1, adminMatrix:1, adminMonths:1, adminStatus:1};
+
+  function qstr(action, params){ return new URLSearchParams(Object.assign({action:action}, params||{})).toString(); }
+  function wait(ms){ return new Promise(function(res){ setTimeout(res, ms); }); }
+  function retryFetch(url, opts, tries){
+    return fetch(url, opts||undefined).then(function(r){
+      if(tries>1 && (r.status===404||r.status===429||r.status>=500)) return wait(600).then(function(){return retryFetch(url,opts,tries-1);});
+      return r;
+    }, function(err){ if(tries>1) return wait(600).then(function(){return retryFetch(url,opts,tries-1);}); throw err; });
+  }
+
+  function fastRead(action, params){
+    return fetch(FAST+'?'+qstr(action, params),{headers:adminHeaders()}).then(function(r){
+      if(r.status===401) return Promise.reject('admin_auth');               // genuine refusal — don't fall back
+      if(r.status===404){ FAST_OFF=true; return Promise.reject('nofast'); } // function not deployed
+      var ct=r.headers.get('content-type')||'';
+      if(!r.ok || ct.indexOf('json')<0) return Promise.reject('notjson');
+      return r.json();
+    }).then(function(j){ if(!j || j.fallback) return Promise.reject('fallback'); return j; });
+  }
+  function slowRead(action, params){
+    var t=setTimeout(function(){ slowNote(true); }, 8000);
+    function done(){ clearTimeout(t); slowNote(false); }
+    var tries = FAST_READS[action] ? 4 : 1;   // retry reads only; addClient/addMember etc. run once (not idempotent)
+    return retryFetch('/api/proxy?'+qstr(action, params), {headers:adminHeaders()}, tries)
+      .then(authCheck)
+      .then(function(r){ return r.json(); })
+      .then(function(j){ done(); return j; }, function(e){ done(); throw e; });
+  }
   function api(action, params){
     startLoad();
-    var qs=new URLSearchParams(Object.assign({action:action},params||{})).toString();
-    return fetch('/api/proxy?'+qs,{headers:adminHeaders()}).then(authCheck).then(function(r){return r.json();}).finally(endLoad);
+    var p;
+    if(!FAST_OFF && FAST && FAST_READS[action]){
+      p = fastRead(action, params).catch(function(e){
+        if(e==='admin_auth'){ handleAuthFail(); throw new Error('admin_auth'); }  // wrong password: stop, show login
+        return slowRead(action, params);
+      });
+    } else {
+      p = slowRead(action, params);
+    }
+    return p.finally(endLoad);
   }
   function apiPost(payload){
-    startLoad();
-    return fetch('/api/proxy',{method:'POST',headers:adminHeaders({'Content-Type':'application/json'}),body:JSON.stringify(payload)}).then(authCheck).then(function(r){return r.json();}).finally(endLoad);
+    startLoad();   // writes stay on Apps Script; retry once on a flaky 404/5xx
+    return retryFetch('/api/proxy',{method:'POST',headers:adminHeaders({'Content-Type':'application/json'}),body:JSON.stringify(payload)}, 2)
+      .then(authCheck).then(function(r){return r.json();}).finally(endLoad);
+  }
+  function fmtAgo(ms){
+    if(!ms) return 'just now';
+    var s=Math.max(0,Math.round((Date.now()-ms)/1000));
+    if(s<90) return s+'s ago';
+    var m=Math.round(s/60); if(m<90) return m+' min ago';
+    return Math.round(m/60)+'h ago';
+  }
+  // Admin slow note explains WHY the fast path isn't serving this request.
+  function slowNote(on){
+    var el=document.getElementById('slowNote'); if(!el) return;
+    if(!on){ el.style.display='none'; return; }
+    el.style.display='block';
+    el.textContent='Google’s servers are being slow — still loading…';
+    if(!FAST) return;
+    fetch(FAST+'?action=ping').then(function(r){ return r.ok ? r.json() : null; }).then(function(j){
+      if(!j){ el.textContent='Google is slow, and fast loading isn’t answering — the Netlify function may not be deployed yet.'; return; }
+      if(!j.published){ el.textContent='Google is slow. Fast loading is set up but nothing has published yet — run “Fast loading: set up” from the Sheet menu and add INGEST_SECRET in Netlify, then redeploy.'; return; }
+      el.textContent='Google is slow. Fast loading is on ('+j.employees+' people, last published '+fmtAgo(j.at)+') but couldn’t answer this request, so it’s asking Apps Script directly.';
+    }).catch(function(){});
   }
 
   function boot(){

@@ -2,4 +2,5 @@
 # (README.md, .gitignore, .clasp.json etc. stay out.)
 **/**
 !Code.gs
+!Publish.gs
 !appsscript.json

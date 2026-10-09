@@ -147,6 +147,15 @@ function doPost(e) {
   return handle_(e, body);
 }
 
+// Actions that change what the reads return. After one succeeds, the fast-loading
+// snapshot is refreshed at once (Publish.gs publishSoon_) so the Netlify read path
+// never serves data older than Apps Script would. A no-op when fast loading is off.
+var MUTATING_ACTIONS = {
+  empSave: 1, empSubmit: 1, empUnassign: 1,
+  addClient: 1, toggleClient: 1, addMember: 1, updateMember: 1, setAssignments: 1,
+  saveSettings: 1
+};
+
 function handle_(e, p) {
   // Auth
   var provided = String(p.key || '');
@@ -156,30 +165,41 @@ function handle_(e, p) {
   var action = String(p.action || '');
   try {
     ensureEntriesSchema_(SpreadsheetApp.getActive());
-    switch (action) {
-      case 'empLoad':   return json_(empLoad(p.slug, p.week || null));
-      case 'empList':   return json_(empList());
-      case 'empSave':   return json_(empSave(p.slug, p.week, p.days || {}, p.assign || []));
-      case 'empSubmit': return json_(empSubmit(p.slug, p.week, p.days || null, p.assign || []));
-      case 'empUnassign': return json_(empUnassign(p.slug, p.clientIds || (p.clientId ? [p.clientId] : [])));
-      case 'adminLoad': return json_(adminLoad());
-      case 'adminReport': return json_(adminReport(p.period, p.scope, p.userId));
-      case 'adminMatrix': return json_(adminMatrix(p.period, p.scope));
-      case 'adminMonths': return json_({ok: true, months: adminMonths()});
-      case 'adminStatus': return json_(adminSubmissionStatus(p.week));
-      case 'addClient': return json_(adminAddClient(p.name));
-      case 'toggleClient': return json_(adminToggleClient(p.id, p.active));
-      case 'addMember': return json_(adminAddMember(p.name, p.type, p.weeklyHours, p.email));
-      case 'updateMember': return json_(adminUpdateMember(p.id, p.patch || {}));
-      case 'setAssignments': return json_(adminSetAssignments(p.clientId, p.userIds || []));
-      case 'loadSettings': return json_({ok: true, settings: getSettings_()});
-      case 'saveSettings': return json_(adminSaveSettings(p.patch || {}));
-      case 'sendTest': return json_(adminSendTest(p.slug));
-      case 'sendWelcome': return json_(adminSendWelcome(p.slug));
-      default: return json_({ok: false, error: 'unknown_action', action: action});
+    var out = route_(action, p);
+    // Refresh the fast-loading snapshot after a successful write (runs after the
+    // action's own lock is released; safe no-op when fast loading isn't set up).
+    if (MUTATING_ACTIONS[action] && out && out.ok && typeof publishSoon_ === 'function') {
+      try { publishSoon_(); } catch (pe) { /* publishing must never fail the write */ }
     }
+    return json_(out);
   } catch (err) {
     return json_({ok: false, error: 'server_error', detail: String(err && err.message || err)});
+  }
+}
+
+// Returns the plain result object for an action (json_ is applied by handle_).
+function route_(action, p) {
+  switch (action) {
+    case 'empLoad':   return empLoad(p.slug, p.week || null);
+    case 'empList':   return empList();
+    case 'empSave':   return empSave(p.slug, p.week, p.days || {}, p.assign || []);
+    case 'empSubmit': return empSubmit(p.slug, p.week, p.days || null, p.assign || []);
+    case 'empUnassign': return empUnassign(p.slug, p.clientIds || (p.clientId ? [p.clientId] : []));
+    case 'adminLoad': return adminLoad();
+    case 'adminReport': return adminReport(p.period, p.scope, p.userId);
+    case 'adminMatrix': return adminMatrix(p.period, p.scope);
+    case 'adminMonths': return {ok: true, months: adminMonths()};
+    case 'adminStatus': return adminSubmissionStatus(p.week);
+    case 'addClient': return adminAddClient(p.name);
+    case 'toggleClient': return adminToggleClient(p.id, p.active);
+    case 'addMember': return adminAddMember(p.name, p.type, p.weeklyHours, p.email);
+    case 'updateMember': return adminUpdateMember(p.id, p.patch || {});
+    case 'setAssignments': return adminSetAssignments(p.clientId, p.userIds || []);
+    case 'loadSettings': return {ok: true, settings: getSettings_()};
+    case 'saveSettings': return adminSaveSettings(p.patch || {});
+    case 'sendTest': return adminSendTest(p.slug);
+    case 'sendWelcome': return adminSendWelcome(p.slug);
+    default: return {ok: false, error: 'unknown_action', action: action};
   }
 }
 
@@ -206,14 +226,26 @@ function empList() {
 
 function empLoad(slug, week) {
   var ss = SpreadsheetApp.getActive();
-  var user = teamBySlug_(ss, slug);
+  return empLoadFromRows_(rows_(ss, DB.ENTRIES), rows_(ss, DB.TEAM),
+    rows_(ss, DB.CLIENTS), rows_(ss, DB.ASSIGN), slug, week);
+}
+
+/** The body of empLoad, working from already-read rows. Pure (no sheet access), so the
+ *  publisher can rebuild every person's week from a single set of reads, while the live
+ *  empLoad above calls it the same way — the two can't drift. Behavior is identical to the
+ *  original empLoad: same user lookup (first active match), same assignment map, same shape. */
+function empLoadFromRows_(entryRows, teamRows, clientRows, assignRows, slug, week) {
+  var user = null;
+  for (var i = 0; i < teamRows.length; i++) {
+    if (teamRows[i].slug === slug && teamRows[i].active !== false) { user = teamRows[i]; break; }
+  }
   if (!user) return {ok: false, error: 'unknown_user'};
 
   var wk = week || fridayOf_(new Date());
-  var assignedIds = assignmentsFor_(ss, user.id);
-  var entryRows = rows_(ss, DB.ENTRIES);                     // read Entries ONCE per request
+  var assignedIds = {};
+  assignRows.forEach(function (a) { if (String(a.userId) === String(user.id)) assignedIds[String(a.clientId)] = true; });
   var hours = entriesForRows_(entryRows, user.id, wk);       // { clientId: { 'yyyy-mm-dd': hours } }
-  var allActive = rows_(ss, DB.CLIENTS).filter(function (c) { return c.active !== false; });
+  var allActive = clientRows.filter(function (c) { return c.active !== false; });
 
   // Show a client row if it's assigned to this user OR they've already logged time
   // against it this week (so a self-added client stays put mid-week).

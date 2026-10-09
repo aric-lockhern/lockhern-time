@@ -96,6 +96,7 @@
   .pickrow .arrow{color:var(--muted);}
   .picksearch{padding:12px 16px;border-bottom:1px solid var(--line);}
   .picksearch input{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);}
+  .slownote{margin-top:12px;padding:10px 14px;background:#fff8ec;border:1px solid #f0e2c0;border-radius:10px;font-size:13px;color:#8a6d1f;}
   .skeleton{padding:16px;}
   .skeleton .sk{height:44px;background:#eef0f3;border-radius:8px;margin-bottom:8px;animation:p 1.2s infinite;}
   @keyframes p{50%{opacity:.5;}}
@@ -112,6 +113,7 @@
   <header class="top">
     <div><h1 id="hello">Timesheet</h1><div class="sub" id="sub">Loading…</div></div>
   </header>
+  <div class="slownote" id="slowNote" style="display:none"></div>
   <div class="card" id="card">
     <div class="skeleton"><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div></div>
   </div>
@@ -138,15 +140,58 @@
   var pending=0;
   function startLoad(){ pending++; var b=document.getElementById('loadbar'); if(b)b.classList.add('on'); }
   function endLoad(){ pending=Math.max(0,pending-1); if(pending===0){ var b=document.getElementById('loadbar'); if(b)b.classList.remove('on'); } }
+
+  // ---- Fast read path ---------------------------------------------------------------
+  // Reads try the site's own Netlify function (served from a published snapshot — fast and
+  // reliable) first, and fall back to Apps Script (via /api/proxy) whenever the fast path can't
+  // answer. Writes always go to Apps Script. The Apps Script path retries the flaky Google front
+  // end and shows a "Google is slow" note after 8 s. See apps-script/Publish.gs.
+  var FAST = /^https?:$/.test(location.protocol) ? (location.origin + '/api') : '';
+  var FAST_OFF = false;                       // turned off for the visit if the function isn't deployed
+  var FAST_READS = {empList:1, empLoad:1};    // the only reads the employee page makes
+
+  function qstr(action, params){ return new URLSearchParams(Object.assign({action:action}, params||{})).toString(); }
+  function wait(ms){ return new Promise(function(res){ setTimeout(res, ms); }); }
+  // Retry a read on the symptoms of Google's flaky front end (404/429/5xx/network), newest first.
+  function retryFetch(url, opts, tries){
+    return fetch(url, opts||undefined).then(function(r){
+      if(tries>1 && (r.status===404||r.status===429||r.status>=500)) return wait(600).then(function(){return retryFetch(url,opts,tries-1);});
+      return r;
+    }, function(err){ if(tries>1) return wait(600).then(function(){return retryFetch(url,opts,tries-1);}); throw err; });
+  }
+
+  function fastRead(action, params){
+    return fetch(FAST+'?'+qstr(action, params)).then(function(r){
+      if(r.status===404){ FAST_OFF=true; return Promise.reject('nofast'); }   // function not deployed
+      var ct=r.headers.get('content-type')||'';
+      if(!r.ok || ct.indexOf('json')<0) return Promise.reject('notjson');
+      return r.json();
+    }).then(function(j){ if(!j || j.fallback) return Promise.reject('fallback'); return j; });
+  }
+  function slowRead(action, params){
+    var t=setTimeout(function(){ slowNote(true); }, 8000);
+    function done(){ clearTimeout(t); slowNote(false); }
+    var tries = FAST_READS[action] ? 4 : 1;   // retry reads only; writes-via-GET run once (not idempotent)
+    return retryFetch('/api/proxy?'+qstr(action, params), null, tries)
+      .then(function(r){ return r.json(); })
+      .then(function(j){ done(); return j; }, function(e){ done(); throw e; });
+  }
   function api(action, params){
     startLoad();
-    var qs = new URLSearchParams(Object.assign({action:action}, params||{})).toString();
-    return fetch('/api/proxy?'+qs).then(function(r){return r.json();}).finally(endLoad);
+    var p = (!FAST_OFF && FAST && FAST_READS[action])
+      ? fastRead(action, params).catch(function(){ return slowRead(action, params); })
+      : slowRead(action, params);
+    return p.finally(endLoad);
   }
   function apiPost(payload){
-    startLoad();
-    return fetch('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    startLoad();   // writes stay on Apps Script; retry once on a flaky 404/5xx (upserts are idempotent)
+    return retryFetch('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}, 2)
       .then(function(r){return r.json();}).finally(endLoad);
+  }
+  function slowNote(on){
+    var el=document.getElementById('slowNote'); if(!el) return;
+    el.style.display = on ? 'block' : 'none';
+    if(on) el.textContent = 'Google’s servers are being slow — still loading your timesheet…';
   }
 
   // ---- date helpers (week ends on Friday) ----

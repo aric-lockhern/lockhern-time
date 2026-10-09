@@ -1,6 +1,8 @@
 [build]
   publish = "public"
   functions = "netlify/functions"
+  # Gate the deploy on the read-path tests: a build that fails the unit tests never publishes.
+  command = "npm test"
 
 [build.environment]
   # Node 18+ guarantees a global fetch() in the function runtime.

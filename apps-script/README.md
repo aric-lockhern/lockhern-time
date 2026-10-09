@@ -5,6 +5,13 @@ Script project bound to the timesheet Google Sheet, **not** on Netlify. This
 copy is kept in the repo for version control; the Apps Script editor is the
 source of truth for what's deployed.
 
+`Publish.gs` is in the **same** project (one global scope, so it calls Code.gs's
+own read functions). It powers **fast loading**: it publishes a snapshot of what
+the pages read to Netlify Blobs so reads don't wait on Google's slow web-app
+front end. See the root `README.md` for how it works and the one-time setup.
+`clasp` pushes both `Code.gs` and `Publish.gs` (see `.claspignore`), so a change
+to either, merged to `main`, auto-deploys through the GitHub Action below.
+
 ## Applying an update
 
 ### Automatic (GitHub Action)
