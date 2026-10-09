@@ -41,7 +41,8 @@ var DB = {
   SPLIT: 'RevenueSplit',  // clientId | channelId | amount (dollars allocated to a channel)
   OWNERS: 'ChannelOwners',// clientId | channelId | userId (explicit owner; empty ⇒ the client's assignees)
   SKILLS: 'TeamSkills',   // userId | channelId  (a person's channel specialties)
-  PAY: 'TeamPay'          // userId | salary     (annual salary, for managed-revenue-vs-cost)
+  PAY: 'TeamPay',         // userId | salary     (annual salary, for managed-revenue-vs-cost)
+  PORTIONS: 'FeePortions' // clientId | userId | amount  (direct per-person fee split of a client)
 };
 var DEFAULT_FT_HOURS = 40;
 var SUBMIT_MARKER = '__submitted__';   // sentinel clientId marking an explicit submission
@@ -137,6 +138,7 @@ function ensureRevenueTabs_(ss) {
   ensureTab_(ss, DB.OWNERS, ['clientId', 'channelId', 'userId']);
   ensureTab_(ss, DB.SKILLS, ['userId', 'channelId']);
   ensureTab_(ss, DB.PAY, ['userId', 'salary']);
+  ensureTab_(ss, DB.PORTIONS, ['clientId', 'userId', 'amount']);
 }
 
 // ---- one-time helper to set the secret from the editor ----
@@ -188,7 +190,8 @@ var MUTATING_ACTIONS = {
   addClient: 1, toggleClient: 1, addMember: 1, updateMember: 1, setAssignments: 1,
   saveSettings: 1,
   saveChannels: 1, saveClientRevenue: 1, saveChannelOwners: 1,
-  saveTeamSkills: 1, saveSalary: 1, importRevenue: 1
+  saveTeamSkills: 1, saveSalary: 1, importRevenue: 1,
+  importFeePortions: 1, saveClientPortions: 1
 };
 
 function handle_(e, p) {
@@ -241,6 +244,8 @@ function route_(action, p) {
     case 'saveTeamSkills': return adminSaveTeamSkills(p.userId, p.channelIds || []);
     case 'saveSalary': return adminSaveSalary(p.userId, p.salary);
     case 'importRevenue': return adminImportRevenue(p.items || []);
+    case 'importFeePortions': return adminImportFeePortions(p.items || []);
+    case 'saveClientPortions': return adminSaveClientPortions(p.clientId, p.monthly, p.portions || {});
     default: return {ok: false, error: 'unknown_action', action: action};
   }
 }
@@ -956,8 +961,15 @@ function adminRevenue() {
     var u = String(r.userId); if (!u) return;
     salaries[u] = Number(r.salary || 0) || 0;
   });
+  var portions = {};
+  rows_(ss, DB.PORTIONS).forEach(function (r) {
+    var c = String(r.clientId), u = String(r.userId), amt = Number(r.amount || 0);
+    if (!c || !u || !amt) return;
+    portions[c] = portions[c] || {};
+    portions[c][u] = round1_((portions[c][u] || 0) + amt);
+  });
 
-  var model = revenueModel_(channels, clientRows, teamAll, assignments, revenue, owners, skills, salaries);
+  var model = revenueModel_(channels, clientRows, teamAll, assignments, revenue, owners, skills, salaries, portions);
   var activeClients = clientRows.filter(function (c) { return c.active !== false; })
     .map(function (c) { return {id: String(c.id), name: c.name}; })
     .sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
@@ -967,7 +979,7 @@ function adminRevenue() {
   var res = {
     ok: true,
     channels: channels, clients: activeClients, team: team, assignments: assignments,
-    revenue: revenue, owners: owners, skills: skills, salaries: salaries,
+    revenue: revenue, owners: owners, skills: skills, salaries: salaries, portions: portions,
     byPerson: model.byPerson, byClient: model.byClient,
     unassigned: model.unassigned, totals: model.totals
   };
@@ -980,8 +992,8 @@ function adminRevenue() {
  * channel's owners (explicit, else the client's assignees), and sums per person.
  * Only ACTIVE clients count. Inactive people who still own revenue are listed too.
  */
-function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owners, skills, salaries) {
-  skills = skills || {}; salaries = salaries || {};
+function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owners, skills, salaries, portions) {
+  skills = skills || {}; salaries = salaries || {}; portions = portions || {};
   var chName = {}; channels.forEach(function (c) { chName[c.id] = c.name; });
   var clientName = {}, activeClient = {};
   clientRows.forEach(function (c) { var id = String(c.id); clientName[id] = c.name; activeClient[id] = (c.active !== false); });
@@ -1015,42 +1027,54 @@ function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owne
 
   var per = {};
   function bucket(uid) { return per[uid] || (per[uid] = {total: 0, clients: {}}); }
+  function credit(uid, cid, chkey, amt) {
+    var b = bucket(uid); b.total += amt;
+    var pc = b.clients[cid] || (b.clients[cid] = {total: 0, channels: {}});
+    pc.total += amt; pc.channels[chkey] = (pc.channels[chkey] || 0) + amt;
+  }
 
   var byClient = [], unassigned = 0;
-  Object.keys(revenue).forEach(function (cid) {
+  var cids = {};
+  Object.keys(revenue).forEach(function (c) { cids[c] = 1; });
+  Object.keys(portions).forEach(function (c) { cids[c] = 1; });
+  Object.keys(cids).forEach(function (cid) {
     if (!activeClient[cid]) return;                      // only active clients are "managed"
-    var r = revenue[cid], monthly = Number(r.monthly || 0), allocated = 0, splitsOut = {};
-    channels.forEach(function (ch) {
-      var amt = Number((r.splits || {})[ch.id] || 0);
-      if (amt <= 0) return;
-      allocated += amt; splitsOut[ch.id] = round1_(amt);
-      var own = effOwners(cid, ch.id);
-      if (!own.length) { unassigned += amt; return; }    // a funded channel nobody owns
-      var share = amt / own.length;
-      own.forEach(function (uid) {
-        var b = bucket(uid); b.total += share;
-        var pc = b.clients[cid] || (b.clients[cid] = {total: 0, channels: {}});
-        pc.total += share; pc.channels[ch.id] = (pc.channels[ch.id] || 0) + share;
+    var r = revenue[cid] || {monthly: 0, splits: {}}, monthly = Number(r.monthly || 0);
+    var pm = portions[cid] || {};
+    var hasPortions = Object.keys(pm).some(function (u) { return Number(pm[u] || 0) > 0; });
+    var distributed = 0, splitsOut = {};
+
+    if (hasPortions) {
+      // Direct per-person fee portions are the source of truth for this client.
+      Object.keys(pm).forEach(function (uid) {
+        var amt = Number(pm[uid] || 0); if (amt <= 0) return;
+        distributed += amt; credit(uid, cid, 'fee', amt);
       });
-    });
-    // Any retainer not split across channels is "unspecified" — attribute it evenly across the
-    // client's assignees, so a client with just a total (e.g. a bulk import) still shows up per
-    // person. Only when the client has nobody assigned does it sit as unassigned.
-    var remainder = Math.max(0, monthly - allocated);
-    if (remainder > 0) {
-      var assg = (assignees[cid] || []);
-      if (!assg.length) { unassigned += remainder; }
-      else {
-        var rshare = remainder / assg.length;
-        assg.forEach(function (uid) {
-          var b = bucket(uid); b.total += rshare;
-          var pc = b.clients[cid] || (b.clients[cid] = {total: 0, channels: {}});
-          pc.total += rshare; pc.channels[''] = (pc.channels[''] || 0) + rshare;   // '' = Unspecified
-        });
+    } else {
+      var allocated = 0;
+      channels.forEach(function (ch) {
+        var amt = Number((r.splits || {})[ch.id] || 0);
+        if (amt <= 0) return;
+        allocated += amt; splitsOut[ch.id] = round1_(amt);
+        var own = effOwners(cid, ch.id);
+        if (!own.length) { unassigned += amt; return; }
+        var share = amt / own.length;
+        own.forEach(function (uid) { distributed += share; credit(uid, cid, ch.id, share); });
+      });
+      // Any retainer beyond the channel splits goes evenly to the client's assignees.
+      var remainder = Math.max(0, monthly - allocated);
+      if (remainder > 0) {
+        var assg = (assignees[cid] || []);
+        if (!assg.length) { unassigned += remainder; }
+        else { var rshare = remainder / assg.length; assg.forEach(function (uid) { distributed += rshare; credit(uid, cid, '', rshare); }); }
       }
     }
-    byClient.push({clientId: cid, name: clientName[cid] || cid, monthly: round1_(monthly),
-      allocated: round1_(allocated), unallocated: round1_(remainder), splits: splitsOut});
+    // The client "total" is its entered retainer, or the distribution if none is set. QA: the two
+    // should match — mismatch is what's over/under-distributed.
+    var total = monthly > 0 ? monthly : distributed;
+    byClient.push({clientId: cid, name: clientName[cid] || cid, monthly: round1_(total),
+      distributed: round1_(distributed), mismatch: round1_(total - distributed),
+      byPortion: hasPortions, splits: splitsOut});
   });
 
   // People to list: active roster first, then any inactive person who still owns revenue.
@@ -1062,7 +1086,8 @@ function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owne
       return {
         clientId: cid, name: clientName[cid] || cid, total: round1_(b.clients[cid].total),
         channels: Object.keys(b.clients[cid].channels).map(function (chid) {
-          return {channelId: chid, name: chName[chid] || (chid === '' ? 'Unspecified' : chid), amount: round1_(b.clients[cid].channels[chid])};
+          var nm = chName[chid] || (chid === 'fee' ? 'Fee portion' : (chid === '' ? 'Unspecified' : chid));
+          return {channelId: chid, name: nm, amount: round1_(b.clients[cid].channels[chid])};
         })
       };
     }).sort(function (a, b2) { return b2.total - a.total || String(a.name).localeCompare(String(b2.name)); });
@@ -1075,10 +1100,11 @@ function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owne
 
   byClient.sort(function (a, b2) { return b2.monthly - a.monthly || String(a.name).localeCompare(String(b2.name)); });
   var gMonthly = byClient.reduce(function (s, x) { return s + x.monthly; }, 0);
-  var gAllocated = byClient.reduce(function (s, x) { return s + x.allocated; }, 0);
+  var gDistributed = byClient.reduce(function (s, x) { return s + x.distributed; }, 0);
+  var mismatches = byClient.filter(function (x) { return Math.abs(x.mismatch) >= 1; }).length;
   return {
     byPerson: byPerson, byClient: byClient, unassigned: round1_(unassigned),
-    totals: {monthly: round1_(gMonthly), allocated: round1_(gAllocated), attributed: round1_(gAllocated - unassigned)}
+    totals: {monthly: round1_(gMonthly), distributed: round1_(gDistributed), attributed: round1_(gDistributed), mismatches: mismatches}
   };
 }
 
@@ -1165,6 +1191,52 @@ function adminImportRevenue(items) {
     order.forEach(function (id) { out.push([id, map[id].monthly, map[id].notes]); });
     sh.clearContents();
     sh.getRange(1, 1, out.length, 3).setValues(out);
+    bustCache_();
+    return adminRevenue();
+  } finally { lock.releaseLock(); }
+}
+
+/** Replace the ENTIRE fee-portion table. items = [{clientId, userId, amount}] (the full picture). */
+function adminImportFeePortions(items) {
+  var ss = SpreadsheetApp.getActive();
+  ensureRevenueTabs_(ss);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var out = [['clientId', 'userId', 'amount']];
+    (items || []).forEach(function (it) {
+      var cid = String(it.clientId || ''), uid = String(it.userId || ''), amt = Number(it.amount);
+      if (!cid || !uid || isNaN(amt) || amt <= 0) return;
+      out.push([cid, uid, amt]);
+    });
+    var sh = ss.getSheetByName(DB.PORTIONS);
+    sh.clearContents();
+    sh.getRange(1, 1, out.length, 3).setValues(out);
+    bustCache_();
+    return adminRevenue();
+  } finally { lock.releaseLock(); }
+}
+
+/** Set one client's retainer + its per-person fee portions. portions = { userId: amount }. */
+function adminSaveClientPortions(clientId, monthly, portions) {
+  var ss = SpreadsheetApp.getActive();
+  ensureRevenueTabs_(ss);
+  clientId = String(clientId || '');
+  if (!clientId) return {ok: false, error: 'no_client'};
+  var m = Number(monthly); if (isNaN(m) || m < 0) m = 0;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var rsh = ss.getSheetByName(DB.REVENUE), rdata = rsh.getDataRange().getValues(), found = false;
+    for (var r = 1; r < rdata.length; r++) { if (String(rdata[r][0]) === clientId) { rsh.getRange(r + 1, 2).setValue(m); found = true; break; } }
+    if (!found) rsh.appendRow([clientId, m, '']);
+
+    var psh = ss.getSheetByName(DB.PORTIONS), pdata = psh.getDataRange().getValues();
+    var keep = [pdata[0] || ['clientId', 'userId', 'amount']];
+    for (var i = 1; i < pdata.length; i++) { if (String(pdata[i][0]) !== clientId) keep.push(pdata[i]); }
+    Object.keys(portions || {}).forEach(function (uid) { var amt = Number(portions[uid]); if (!isNaN(amt) && amt > 0) keep.push([clientId, String(uid), amt]); });
+    psh.clearContents();
+    psh.getRange(1, 1, keep.length, 3).setValues(keep);
     bustCache_();
     return adminRevenue();
   } finally { lock.releaseLock(); }

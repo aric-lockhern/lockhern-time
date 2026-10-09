@@ -85,6 +85,10 @@
   .rchead .csaved{font-size:12px;color:var(--accent);min-width:60px;text-align:right;}
   .rchead .rcdel{font:inherit;font-size:12px;background:none;border:none;color:#b06a5f;cursor:pointer;margin-left:auto;padding:4px 2px;}
   .rchead .rcdel:hover{color:#b3261e;text-decoration:underline;}
+  .feerow{display:flex;align-items:center;gap:10px;padding:3px 0;}
+  .feerow .fn{min-width:150px;font-size:14px;}
+  .feeadd{margin-top:6px;}
+  .feeadd select{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:7px;}
   /* top progress bar — visible whenever a request is in flight */
   #loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:9999;opacity:0;transition:opacity .15s;pointer-events:none;overflow:hidden;}
   #loadbar.on{opacity:1;}
@@ -806,6 +810,14 @@
   //  views render from it; edits save through Apps Script and return a fresh snapshot.
   // ============================================================
   var REV=null, REVVIEW='person', revClient='', revLoaded=false;
+  var revPersonSort='rev', revSetupSort='rev', revSetupFilter='';
+  function revSortPeople(list){
+    var a=list.slice();
+    if(revPersonSort==='az') a.sort(function(x,y){return String(x.name).localeCompare(String(y.name));});
+    else if(revPersonSort==='salary') a.sort(function(x,y){return (y.salary||0)-(x.salary||0);});
+    else a.sort(function(x,y){return y.total-x.total;});
+    return a;
+  }
   function fmtMoney(n){ return '$'+Math.round(Number(n)||0).toLocaleString(); }
   function revAssignees(cid){ return REV.assignments.filter(function(a){return String(a.clientId)===String(cid);}).map(function(a){return String(a.userId);}); }
   function revHasSkill(uid,chid){ return ((REV.skills||{})[String(uid)]||[]).indexOf(String(chid))>=0; }
@@ -824,6 +836,25 @@
   function fmtK(n){ n=Number(n)||0; return n>=1000 ? '$'+Math.round(n/1000)+'k' : '$'+Math.round(n); }
   function revMultiple(p){ return p.salary>0 ? (p.total*12/p.salary) : null; }   // managed /yr ÷ salary
   function revNormName(s){ return String(s).toLowerCase().replace(/[^a-z0-9]+/g,''); }
+  function revNormClient(s){ return revNormName(String(s).replace(/\([^)]*\)/g,'')); }   // ignore "(11/1/26)" etc.
+  // Parse the pivoted fee grid: header row of person columns (Name, Fee Portion, repeating), then
+  // rows of client/amount pairs under each person. Returns records {person, client, amount|null}.
+  function revParsePivot(text){
+    var lines=String(text).split(/\r?\n/).filter(function(l){return l.trim();});
+    if(!lines.length) return {recs:[], people:[]};
+    var header=lines[0].split('\t'), cols=[];
+    for(var j=0;j<header.length;j+=2){ var nm=(header[j]||'').trim(); if(nm) cols.push({idx:j,name:nm}); }
+    var recs=[];
+    for(var i=1;i<lines.length;i++){
+      var cells=lines[i].split('\t');
+      cols.forEach(function(pc){
+        var client=(cells[pc.idx]||'').trim(); if(!client) return;
+        var amt=parseFloat(String(cells[pc.idx+1]||'').replace(/[$,]/g,''));
+        recs.push({person:pc.name, client:client, amount:isNaN(amt)?null:amt});
+      });
+    }
+    return {recs:recs, people:cols.map(function(p){return p.name;})};
+  }
   // Parse "Client name <tab/spaces> amount" — amount is the last column; lines without a number are skipped.
   function revParseLine(line){
     line=String(line).replace(/\s+$/,''); if(!line.trim()) return null;
@@ -854,8 +885,8 @@
 
   function renderRevenue(){
     if(!REV) return;
-    var t=REV.totals||{monthly:0,allocated:0,attributed:0};
-    document.getElementById('revSummary').textContent=fmtMoney(t.attributed)+' / mo attributed to people'+(REV.unassigned>0?('  ·  '+fmtMoney(REV.unassigned)+' on channels with no owner'):'');
+    var t=REV.totals||{monthly:0,distributed:0,attributed:0,mismatches:0};
+    document.getElementById('revSummary').textContent=fmtMoney(t.distributed!=null?t.distributed:t.attributed)+' / mo to people'+(t.mismatches?('  ·  '+t.mismatches+' client(s) don’t balance'):'');
     if(REVVIEW==='person') renderRevPerson();
     else if(REVVIEW==='map') renderRevMap();
     else if(REVVIEW==='team') renderRevTeam();
@@ -865,7 +896,7 @@
   function renderRevPerson(){
     var t=REV.totals||{}, max=REV.byPerson.reduce(function(m,p){return Math.max(m,p.total);},0)||1;
     var anySalary=REV.byPerson.some(function(p){return p.salary>0;});
-    var rows=REV.byPerson.map(function(p){
+    var rows=revSortPeople(REV.byPerson).map(function(p){
       var pct=Math.round(p.total/max*100);
       var mult=revMultiple(p);
       var multCell=mult==null?'<span class="muted">—</span>':('<b>'+mult.toFixed(1)+'×</b>');
@@ -883,18 +914,32 @@
         '<td style="min-width:110px"><div class="revbar"><i style="width:'+pct+'%"></i></div></td></tr>'+
         '<tr class="detail" data-for="'+esc(p.id)+'" style="display:none"><td colspan="6">'+detail+'</td></tr>';
     }).join('');
+    // QA: clients whose per-person distribution doesn't equal their total.
+    var bad=REV.byClient.filter(function(c){return Math.abs(c.mismatch)>=1;});
+    var qa = bad.length
+      ? '<div class="card" style="border-color:#f0c9c4;background:#fdf6f5"><h2>Needs attention — split ≠ total ('+bad.length+')</h2>'+
+          '<div class="sub" style="margin-bottom:8px">These clients’ fee portions don’t add up to the retainer. Fix on Client setup.</div>'+
+          '<table class="rev"><thead><tr><th>Client</th><th class="num">Total</th><th class="num">Distributed</th><th class="num">Off by</th></tr></thead><tbody>'+
+          bad.map(function(c){return '<tr><td>'+esc(c.name)+'</td><td class="num">'+fmtMoney(c.monthly)+'</td><td class="num">'+fmtMoney(c.distributed)+'</td><td class="num" style="color:#b3261e">'+(c.mismatch>0?'+':'')+fmtMoney(c.mismatch)+'</td></tr>';}).join('')+
+          '</tbody></table></div>'
+      : '';
     document.getElementById('revPerson').innerHTML=
       '<div class="card"><div class="revkpi">'+
-        '<div><div class="n">'+fmtMoney(t.attributed)+'</div><div class="l">Attributed / mo</div></div>'+
+        '<div><div class="n">'+fmtMoney(t.distributed)+'</div><div class="l">Managed / mo</div></div>'+
         '<div><div class="n">'+fmtMoney(t.monthly)+'</div><div class="l">Total retainers / mo</div></div>'+
         '<div><div class="n">'+REV.byPerson.filter(function(p){return p.total>0;}).length+'</div><div class="l">People with revenue</div></div>'+
-        (REV.unassigned>0?'<div><div class="n"><span class="warnpill">'+fmtMoney(REV.unassigned)+'</span></div><div class="l">No channel owner</div></div>':'')+
+        (t.mismatches?'<div><div class="n"><span class="warnpill">'+t.mismatches+'</span></div><div class="l">Don’t balance</div></div>':'')+
       '</div></div>'+
       '<div class="card"><h2>Managed revenue by person</h2>'+
-        '<div class="sub" style="margin-bottom:8px">Each channel’s dollars go to the people who own it. <b>×</b> is managed revenue annualized ÷ salary. Set salary &amp; specialties on the Team tab. Click a person for the breakdown.</div>'+
+        '<div class="filters" style="margin-bottom:8px"><label>Sort <select id="revPersonSortSel">'+
+          '<option value="rev"'+(revPersonSort==='rev'?' selected':'')+'>Revenue</option>'+
+          '<option value="az"'+(revPersonSort==='az'?' selected':'')+'>A–Z</option>'+
+          '<option value="salary"'+(revPersonSort==='salary'?' selected':'')+'>Salary</option>'+
+        '</select></label><span class="sub"><b>×</b> = managed revenue annualized ÷ salary. Click a person for the breakdown.</span></div>'+
         '<table class="rev"><thead><tr><th>Person</th><th class="num">Managed / mo</th><th class="num">Salary / yr</th><th class="num">× salary</th><th class="num">Clients</th><th>Share</th></tr></thead><tbody>'+rows+'</tbody></table>'+
         (anySalary?'':'<div class="sub" style="margin-top:8px">Add salaries on the <b>Team &amp; specialties</b> tab to see the ×-salary multiple.</div>')+
-      '</div>';
+      '</div>'+qa;
+    document.getElementById('revPersonSortSel').addEventListener('change',function(){ revPersonSort=this.value; renderRevPerson(); });
     document.querySelectorAll('#revPerson tr.person').forEach(function(tr){
       tr.addEventListener('click',function(){ var d=document.querySelector('#revPerson tr.detail[data-for="'+tr.getAttribute('data-id')+'"]'); if(d)d.style.display=(d.style.display==='none'?'table-row':'none'); });
     });
@@ -964,68 +1009,193 @@
   }
 
   function renderRevSetup(){
-    // Channels editor
+    // Import the per-person fee grid (pivoted: Name / Fee Portion columns).
+    var importCard='<div class="card"><h2>Import fee portions</h2>'+
+      '<div class="sub" style="margin-bottom:8px">Paste the per-person grid from your spreadsheet (columns: <b>Name</b>, <b>Fee Portion</b>, repeating). It matches people &amp; clients by name and sets each person’s portion of each client. <b>Replaces all current fee portions.</b> Preview first — unmatched names are listed.</div>'+
+      '<textarea id="feePaste" rows="6" style="width:100%;font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box" placeholder="Bob&#9;Fee Portion&#9;Craig&#9;Fee Portion&#10;Qosmedix&#9;1980&#9;Blissoma&#9;1500"></textarea>'+
+      '<div style="margin-top:8px;display:flex;gap:10px;align-items:center"><button class="act" id="feePrev">Preview</button>'+
+      '<button class="act" id="feeApply" style="background:#4a90a4;display:none">Apply</button>'+
+      '<span class="sub" id="feeMsg"></span></div>'+
+      '<div id="feeResult" class="sub" style="margin-top:8px"></div></div>';
+
+    // Import retainer totals (for the QA total-vs-distribution check).
+    var retainerCard='<div class="card"><h2>Import retainer totals</h2>'+
+      '<div class="sub" style="margin-bottom:8px">Optional — paste <b>Client name</b> then the <b>monthly total</b>. Sets each client’s retainer so the QA check can compare it against the fee-portion distribution. Leaves fee portions alone.</div>'+
+      '<textarea id="revPaste" rows="4" style="width:100%;font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box" placeholder="Xero Shoes&#9;15500&#10;Vericast&#9;10000"></textarea>'+
+      '<div style="margin-top:8px;display:flex;gap:10px;align-items:center"><button class="act" id="revPrev">Preview</button>'+
+      '<button class="act" id="revApply" style="background:#4a90a4;display:none">Apply</button>'+
+      '<span class="sub" id="revImpMsg"></span></div>'+
+      '<div id="revImpResult" class="sub" style="margin-top:8px"></div></div>';
+
+    // Per-client fee portions, with a filter + sort toolbar.
+    var clientsCard='<div class="card"><h2>Client fee portions</h2>'+
+      '<div class="sub" style="margin-bottom:8px">Each client’s monthly total and the dollar portion credited to each person. The readout flags when the portions don’t add up to the total. Changes save as you go.</div>'+
+      '<div class="filters" style="margin-bottom:6px">'+
+        '<input id="revFilter" placeholder="Filter clients…" style="min-width:200px" value="'+esc(revSetupFilter)+'">'+
+        '<label>Sort <select id="revSortSel"><option value="rev"'+(revSetupSort==='rev'?' selected':'')+'>Revenue</option><option value="az"'+(revSetupSort==='az'?' selected':'')+'>A–Z</option></select></label>'+
+      '</div><div id="revClients"></div></div>';
+
+    // Channels (secondary — used for Team specialties and for clients with no fee portions set).
     var chans=REV.channels.map(function(c){
       return '<div class="chaneditrow"><input class="chName" data-id="'+esc(c.id)+'" value="'+esc(c.name)+'">'+
         '<label style="font-size:12px;color:var(--muted)"><input type="checkbox" class="chEvery"'+(c.everyone?' checked':'')+'> everyone</label>'+
         '<button class="link chDel" data-id="'+esc(c.id)+'">Remove</button></div>';
     }).join('');
     var channelsCard='<div class="card"><h2>Channels</h2>'+
-      '<div class="sub" style="margin-bottom:10px">Service lines revenue is split across. Tick <b>everyone</b> for a whole-team channel (e.g. Paid Search) — it defaults to all of a client’s assignees instead of just specialists. Removing one keeps past splits intact but hides it going forward.</div>'+
+      '<div class="sub" style="margin-bottom:10px">Service lines, used by Team &amp; specialties and for any client without explicit fee portions. Tick <b>everyone</b> for a whole-team channel.</div>'+
       '<div id="chanList">'+chans+'</div>'+
       '<div class="chaneditrow"><input id="chNew" placeholder="Add a channel…"><button class="act" id="chAdd">Add</button>'+
       '<button class="act" id="chSave" style="background:#4a90a4">Save channels</button></div></div>';
 
-    // Every client, inline — no dropdown — grouped into "needs revenue" and "set up".
-    function hasRev(c){ return (((REV.revenue[c.id]||{}).monthly)||0)>0; }
-    function section(title,list){ return list.length ? '<div class="revgrouphdr">'+esc(title)+' ('+list.length+')</div>'+list.map(revClientBlockHtml).join('') : ''; }
-    var todo=REV.clients.filter(function(c){return !hasRev(c);});
-    var done=REV.clients.filter(hasRev);
-    var blocks=REV.clients.length
-      ? (section('Needs revenue', todo)+section('Set up', done))
-      : '<div class="muted">No active clients yet. Add them on the Clients tab.</div>';
-    var clientsCard='<div class="card"><h2>Client revenue &amp; ownership</h2>'+
-      '<div class="sub" style="margin-bottom:10px">For each client: set the monthly retainer, split it across channels ($), and tick who owns each channel. A specialist channel lists its ★ specialists; an <b>everyone</b> channel (e.g. Paid Search) lists the client’s assignees and defaults to all of them. Changes save as you go.</div>'+
-      '<div id="revClients">'+blocks+'</div></div>';
+    document.getElementById('revSetup').innerHTML=importCard+retainerCard+clientsCard+channelsCard;
 
-    var importCard='<div class="card"><h2>Bulk import monthly revenue</h2>'+
-      '<div class="sub" style="margin-bottom:8px">Paste rows of <b>Client name</b> then the <b>amount</b> (tab- or space-separated — straight from a spreadsheet works). It matches names to your clients and sets each monthly retainer; channel splits &amp; owners are left alone. Preview before applying.</div>'+
-      '<textarea id="revPaste" rows="5" style="width:100%;font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;box-sizing:border-box" placeholder="Xero Shoes\t15500&#10;Vericast\t10000"></textarea>'+
-      '<div style="margin-top:8px;display:flex;gap:10px;align-items:center"><button class="act" id="revPrev">Preview</button>'+
-      '<button class="act" id="revApply" style="background:#4a90a4;display:none">Apply</button>'+
-      '<span class="sub" id="revImpMsg"></span></div>'+
-      '<div id="revImpResult" class="sub" style="margin-top:8px"></div></div>';
+    wireFeeImport();
+    wireRetainerImport();
+    wireChannelsEditor();
+    document.getElementById('revFilter').addEventListener('input',function(){ revSetupFilter=this.value; renderRevClientList(); });
+    document.getElementById('revSortSel').addEventListener('change',function(){ revSetupSort=this.value; renderRevClientList(); });
+    renderRevClientList();
+  }
 
-    document.getElementById('revSetup').innerHTML=importCard+channelsCard+clientsCard;
+  function renderRevClientList(){
+    var monthlyOf={}; REV.byClient.forEach(function(c){ monthlyOf[c.clientId]=c.monthly; });
+    var list=REV.clients.slice();
+    var f=revSetupFilter.trim().toLowerCase();
+    if(f) list=list.filter(function(c){ return String(c.name).toLowerCase().indexOf(f)>=0; });
+    if(revSetupSort==='az') list.sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
+    else list.sort(function(a,b){ return (monthlyOf[b.id]||0)-(monthlyOf[a.id]||0) || String(a.name).localeCompare(String(b.name)); });
+    var host=document.getElementById('revClients');
+    host.innerHTML=list.length?list.map(revClientBlockHtml).join(''):'<div class="muted">No clients match.</div>';
+    list.forEach(function(c){ wireRevClient(c.id); });
+  }
 
-    // wire bulk import
-    var pendingImport=[];
+  // One client: monthly total + a dollar fee portion per person.
+  function revClientBlockHtml(c){
+    var cid=c.id, monthly=(REV.revenue[cid]&&REV.revenue[cid].monthly)||0, pm=(REV.portions&&REV.portions[cid])||{};
+    var withP=REV.team.filter(function(t){ return Number(pm[String(t.id)]||0)>0; });
+    var rows=withP.map(function(t){
+      return '<div class="feerow"><span class="fn">'+esc(t.name)+'</span>'+
+        '<span>$ <input class="amt fp" data-u="'+esc(t.id)+'" type="number" min="0" step="100" value="'+(pm[String(t.id)]||'')+'" placeholder="0"></span></div>';
+    }).join('');
+    var addOpts=REV.team.filter(function(t){ return !(Number(pm[String(t.id)]||0)>0); })
+      .map(function(t){ return '<option value="'+esc(t.id)+'">'+esc(t.name)+'</option>'; }).join('');
+    return '<div class="revclient" data-cid="'+esc(cid)+'">'+
+      '<div class="rchead"><span class="cname">'+esc(c.name)+'</span>'+
+        '<span>$ <input class="amt cmonthly" type="number" min="0" step="100" value="'+(monthly||'')+'" placeholder="0"> /mo total</span>'+
+        '<span class="alloc"></span><span class="csaved"></span>'+
+        '<button class="rcdel" type="button" title="Remove this client (deactivates it everywhere)">Remove</button></div>'+
+      '<div class="feerows">'+rows+'</div>'+
+      '<div class="feeadd"><select class="fpadd"><option value="">+ add person…</option>'+addOpts+'</select></div>'+
+      '</div>';
+  }
+
+  function wireRevClient(cid){
+    var block=document.querySelector('#revClients .revclient[data-cid="'+cid+'"]'); if(!block)return;
+    var saved=block.querySelector('.csaved'), monthlyEl=block.querySelector('.cmonthly'), timer=null;
+    function recalc(){
+      var monthly=Number(monthlyEl.value)||0, sum=0;
+      block.querySelectorAll('.fp').forEach(function(inp){ sum+=Number(inp.value)||0; });
+      var al=block.querySelector('.alloc'), diff=monthly-sum;
+      al.textContent=(monthly||sum)?(fmtMoney(sum)+' distributed of '+fmtMoney(monthly)+(Math.abs(diff)>=1?(diff>0?('  ·  '+fmtMoney(diff)+' short'):('  ·  '+fmtMoney(-diff)+' over')):'  ·  balanced')):'';
+      al.style.color=Math.abs(diff)>=1?'#b3261e':'var(--muted)';
+    }
+    function saveNow(){
+      var monthly=Number(monthlyEl.value)||0, portions={};
+      block.querySelectorAll('.fp').forEach(function(inp){ var a=Number(inp.value)||0; if(a>0) portions[inp.getAttribute('data-u')]=a; });
+      saved.textContent='Saving…';
+      apiPost({action:'saveClientPortions',clientId:cid,monthly:monthly,portions:portions})
+        .then(function(r2){ if(r2&&r2.ok){ REV=r2; saved.textContent='Saved ✓'; } else saved.textContent='Save failed'; })
+        .catch(function(e){ if(String(e&&e.message)==='admin_auth')return; saved.textContent='Save failed'; });
+    }
+    function saveSoon(){ clearTimeout(timer); saved.textContent='…'; timer=setTimeout(saveNow,700); }
+    function wireAmt(inp){ inp.addEventListener('input',recalc); inp.addEventListener('change',saveSoon); }
+    monthlyEl.addEventListener('input',recalc); monthlyEl.addEventListener('change',saveSoon);
+    block.querySelectorAll('.fp').forEach(wireAmt);
+    var addSel=block.querySelector('.fpadd');
+    if(addSel) addSel.addEventListener('change',function(){
+      var uid=this.value; if(!uid)return;
+      var name=(REV.team.filter(function(t){return String(t.id)===String(uid);})[0]||{}).name||'';
+      var row=document.createElement('div'); row.className='feerow';
+      row.innerHTML='<span class="fn">'+esc(name)+'</span><span>$ <input class="amt fp" data-u="'+esc(uid)+'" type="number" min="0" step="100" value="" placeholder="0"></span>';
+      block.querySelector('.feerows').appendChild(row);
+      var inp=row.querySelector('.fp'); wireAmt(inp); inp.focus();
+      var opt=this.querySelector('option[value="'+uid+'"]'); if(opt)opt.remove(); this.value='';
+    });
+    var del=block.querySelector('.rcdel');
+    if(del) del.addEventListener('click',function(){
+      var cname=block.querySelector('.cname').textContent;
+      if(!confirm('Remove “'+cname+'”?\nThis deactivates the client — it drops off the revenue views and the timesheet, like unchecking it on the Clients tab. Data is kept and comes back if you re-activate it.')) return;
+      del.textContent='Removing…';
+      apiPost({action:'toggleClient',id:cid,active:false}).then(function(r){
+        if(r&&r.ok){ api('adminRevenue').then(function(rv){ if(rv&&rv.ok){ REV=rv; renderRevenue(); toast('Removed “'+cname+'”'); } }); }
+        else { del.textContent='Remove'; toast('Remove failed'+(r&&r.detail?': '+r.detail:'')); }
+      }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; del.textContent='Remove'; toast('Remove failed: '+e); });
+    });
+    recalc();
+  }
+
+  function wireFeeImport(){
+    var pending=null;
+    document.getElementById('feePrev').addEventListener('click',function(){
+      var parsed=revParsePivot(document.getElementById('feePaste').value);
+      var teamBy={}; REV.team.forEach(function(t){ teamBy[revNormName(t.name)]=t.id; });
+      var clientBy={}; REV.clients.forEach(function(c){ clientBy[revNormClient(c.name)]=c.id; });
+      var items=[], badP={}, badC={}, noAmt=0;
+      parsed.recs.forEach(function(rec){
+        var uid=teamBy[revNormName(rec.person)], clid=clientBy[revNormClient(rec.client)];
+        if(!uid) badP[rec.person]=1;
+        if(!clid){ badC[rec.client]=1; return; }
+        if(rec.amount==null||rec.amount<=0){ noAmt++; return; }
+        if(uid) items.push({clientId:clid,userId:uid,amount:rec.amount});
+      });
+      pending=items;
+      var bp=Object.keys(badP), bc=Object.keys(badC);
+      var html='<b>'+items.length+'</b> portion(s) matched'+(noAmt?('  ·  '+noAmt+' skipped (no amount)'):'');
+      if(bp.length) html+='<div style="margin-top:6px;color:#b3261e">People not matched: '+bp.map(esc).join(', ')+'</div>';
+      if(bc.length) html+='<div style="margin-top:6px;color:#b3261e">Clients not matched: '+bc.map(esc).join(', ')+'</div>';
+      document.getElementById('feeResult').innerHTML=html;
+      document.getElementById('feeApply').style.display=items.length?'inline-block':'none';
+      document.getElementById('feeMsg').textContent='';
+    });
+    document.getElementById('feeApply').addEventListener('click',function(){
+      if(!pending||!pending.length)return;
+      if(!confirm('Replace ALL fee portions with this import ('+pending.length+' portions)?')) return;
+      document.getElementById('feeMsg').textContent='Applying…';
+      apiPost({action:'importFeePortions',items:pending}).then(function(r){
+        if(r&&r.ok){ var n=pending.length; REV=r; renderRevenue(); toast('Imported '+n+' fee portion(s) ✓'); }
+        else document.getElementById('feeMsg').textContent='Import failed'+(r&&r.detail?': '+r.detail:'');
+      }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; document.getElementById('feeMsg').textContent='Import failed: '+e; });
+    });
+  }
+
+  function wireRetainerImport(){
+    var pending=[];
     document.getElementById('revPrev').addEventListener('click',function(){
-      var nameToId={}; REV.clients.forEach(function(c){ nameToId[revNormName(c.name)]=c.id; });
+      var nameToId={}; REV.clients.forEach(function(c){ nameToId[revNormClient(c.name)]=c.id; });
       var matched=[], unmatched=[];
       document.getElementById('revPaste').value.split(/\r?\n/).forEach(function(line){
         var p=revParseLine(line); if(!p)return;
-        var id=nameToId[revNormName(p.name)];
+        var id=nameToId[revNormClient(p.name)];
         if(id) matched.push({clientId:id,name:p.name,monthly:p.amount}); else unmatched.push(p);
       });
-      pendingImport=matched;
+      pending=matched;
       var html='<b>'+matched.length+'</b> matched'+(unmatched.length?('  ·  <b>'+unmatched.length+'</b> not matched'):'');
-      if(matched.length) html+='<div style="margin-top:6px;max-height:160px;overflow:auto">'+matched.map(function(m){return esc(m.name)+' → '+fmtMoney(m.monthly);}).join('<br>')+'</div>';
-      if(unmatched.length) html+='<div style="margin-top:6px;color:#b3261e">Not matched (add as clients, or fix the name): '+unmatched.map(function(u){return esc(u.name);}).join(', ')+'</div>';
+      if(unmatched.length) html+='<div style="margin-top:6px;color:#b3261e">Not matched: '+unmatched.map(function(u){return esc(u.name);}).join(', ')+'</div>';
       document.getElementById('revImpResult').innerHTML=html;
       document.getElementById('revApply').style.display=matched.length?'inline-block':'none';
       document.getElementById('revImpMsg').textContent='';
     });
     document.getElementById('revApply').addEventListener('click',function(){
-      if(!pendingImport.length)return;
+      if(!pending.length)return;
       document.getElementById('revImpMsg').textContent='Applying…';
-      apiPost({action:'importRevenue',items:pendingImport.map(function(m){return {clientId:m.clientId,monthly:m.monthly};})}).then(function(r){
-        if(r&&r.ok){ var n=pendingImport.length; REV=r; renderRevenue(); toast('Imported '+n+' client(s) ✓'); }
+      apiPost({action:'importRevenue',items:pending.map(function(m){return {clientId:m.clientId,monthly:m.monthly};})}).then(function(r){
+        if(r&&r.ok){ var n=pending.length; REV=r; renderRevenue(); toast('Set '+n+' retainer(s) ✓'); }
         else document.getElementById('revImpMsg').textContent='Import failed'+(r&&r.detail?': '+r.detail:'');
       }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; document.getElementById('revImpMsg').textContent='Import failed: '+e; });
     });
+  }
 
-    // wire channels
+  function wireChannelsEditor(){
     document.getElementById('chAdd').addEventListener('click',function(){
       var v=document.getElementById('chNew').value.trim(); if(!v)return;
       var list=document.getElementById('chanList');
@@ -1046,90 +1216,6 @@
       toast('Saving channels…');
       apiPost({action:'saveChannels',channels:list}).then(function(r){ if(r&&r.ok){ REV=r; renderRevenue(); toast('Channels saved.'); } else toast('Save failed'+(r&&r.detail?': '+r.detail:'')); }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; toast('Save failed: '+e); });
     });
-
-    // wire every client block
-    REV.clients.forEach(function(c){ wireRevClient(c.id); });
-  }
-
-  // One client's row in Setup: name, monthly retainer, per-channel split ($ + %), and owner chips.
-  function revClientBlockHtml(c){
-    var cid=c.id, r=(REV.revenue[cid])||{monthly:0,notes:'',splits:{}};
-    var rows=REV.channels.map(function(ch){
-      var amt=Number((r.splits||{})[ch.id]||0);
-      var own=revEffOwners(cid,ch.id);
-      function chip(t){
-        var on=own.indexOf(String(t.id))>=0, sp=revHasSkill(t.id,ch.id);
-        return '<label class="'+(on?'on':'')+(sp?' spec':'')+'"><input type="checkbox" data-ch="'+esc(ch.id)+'" data-u="'+esc(t.id)+'"'+(on?' checked':'')+'>'+esc(t.name)+'</label>';
-      }
-      // Options: an "everyone" channel lists the client's assignees; a specialist channel lists its
-      // specialists (falling back to assignees when none). Anyone explicitly set is always shown.
-      var spec=revSpecialists(ch.id), explicit=(REV.owners[cid]&&REV.owners[cid][ch.id])||[];
-      var base = revChannelEveryone(ch.id) ? revAssignees(cid) : (spec.length ? spec : revAssignees(cid));
-      var poolIds={}; base.forEach(function(u){poolIds[String(u)]=1;}); explicit.forEach(function(u){poolIds[String(u)]=1;});
-      var pool=REV.team.filter(function(t){return poolIds[String(t.id)];});
-      var chips = pool.length
-        ? pool.map(chip).join('')
-        : '<span class="muted" style="font-size:12px;margin-right:4px">No one assigned — pick anyone:</span>'+REV.team.map(chip).join('');
-      return '<div class="chanrow"><span class="cn">'+esc(ch.name)+'</span>'+
-        '<span>$ <input class="amt camt" data-ch="'+esc(ch.id)+'" type="number" min="0" step="100" value="'+(amt||'')+'" placeholder="0"></span>'+
-        '<span class="pct" data-pctfor="'+esc(ch.id)+'"></span>'+
-        '<span class="owners" data-ownfor="'+esc(ch.id)+'">'+chips+'</span></div>';
-    }).join('');
-    return '<div class="revclient" data-cid="'+esc(cid)+'">'+
-      '<div class="rchead"><span class="cname">'+esc(c.name)+'</span>'+
-        '<span>$ <input class="amt cmonthly" type="number" min="0" step="100" value="'+(r.monthly||'')+'" placeholder="0"> /mo</span>'+
-        '<span class="alloc"></span><span class="csaved"></span>'+
-        '<button class="rcdel" type="button" title="Remove this client (deactivates it everywhere)">Remove</button></div>'+
-      rows+'</div>';
-  }
-
-  function wireRevClient(cid){
-    var block=document.querySelector('#revClients .revclient[data-cid="'+cid+'"]'); if(!block)return;
-    var saved=block.querySelector('.csaved'), monthlyEl=block.querySelector('.cmonthly'), timer=null;
-    function recalc(){
-      var monthly=Number(monthlyEl.value)||0, sum=0;
-      block.querySelectorAll('.camt').forEach(function(inp){
-        var a=Number(inp.value)||0; sum+=a;
-        var el=block.querySelector('.pct[data-pctfor="'+inp.getAttribute('data-ch')+'"]'); if(el)el.textContent=monthly>0?(Math.round(a/monthly*100)+'%'):'';
-      });
-      var al=block.querySelector('.alloc'), diff=monthly-sum;
-      al.textContent=(monthly||sum)?(fmtMoney(sum)+' allocated'+(Math.abs(diff)>=1?(diff>0?('  ·  '+fmtMoney(diff)+' left'):('  ·  '+fmtMoney(-diff)+' over')):'  ·  balanced')):'';
-      al.style.color=diff<-0.5?'#b3261e':'var(--muted)';
-    }
-    function saveNow(){
-      var monthly=Number(monthlyEl.value)||0, splits={};
-      block.querySelectorAll('.camt').forEach(function(inp){ var a=Number(inp.value)||0; if(a>0) splits[inp.getAttribute('data-ch')]=a; });
-      var r=(REV.revenue[cid])||{notes:''};
-      saved.textContent='Saving…';
-      apiPost({action:'saveClientRevenue',clientId:cid,monthly:monthly,notes:r.notes||'',splits:splits})
-        .then(function(r2){ if(r2&&r2.ok){ REV=r2; saved.textContent='Saved ✓'; } else saved.textContent='Save failed'; })
-        .catch(function(e){ if(String(e&&e.message)==='admin_auth')return; saved.textContent='Save failed'; });
-    }
-    function saveSoon(){ clearTimeout(timer); saved.textContent='…'; timer=setTimeout(saveNow,700); }
-    var del=block.querySelector('.rcdel');
-    if(del) del.addEventListener('click',function(){
-      var cname=block.querySelector('.cname').textContent;
-      if(!confirm('Remove “'+cname+'”?\nThis unchecks (deactivates) the client — it drops off the revenue views and off the timesheet, exactly like unchecking it on the Clients tab. Any revenue you entered is kept and comes back if you re-activate it.')) return;
-      del.textContent='Removing…';
-      apiPost({action:'toggleClient',id:cid,active:false}).then(function(r){
-        if(r&&r.ok){ api('adminRevenue').then(function(rv){ if(rv&&rv.ok){ REV=rv; renderRevenue(); toast('Removed “'+cname+'”'); } }); }
-        else { del.textContent='Remove'; toast('Remove failed'+(r&&r.detail?': '+r.detail:'')); }
-      }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; del.textContent='Remove'; toast('Remove failed: '+e); });
-    });
-    monthlyEl.addEventListener('input',recalc); monthlyEl.addEventListener('change',saveSoon);
-    block.querySelectorAll('.camt').forEach(function(inp){ inp.addEventListener('input',recalc); inp.addEventListener('change',saveSoon); });
-    block.querySelectorAll('.owners input').forEach(function(cb){
-      cb.addEventListener('change',function(){
-        var chid=cb.getAttribute('data-ch'), picks=[];
-        block.querySelectorAll('.owners input[data-ch="'+chid+'"]').forEach(function(x){ if(x.checked)picks.push(x.getAttribute('data-u')); });
-        cb.closest('label').classList.toggle('on',cb.checked);
-        saved.textContent='Saving…';
-        apiPost({action:'saveChannelOwners',clientId:cid,channelId:chid,userIds:picks})
-          .then(function(r2){ if(r2&&r2.ok){ REV=r2; saved.textContent='Saved ✓'; } else saved.textContent='Save failed'; })
-          .catch(function(e){ if(String(e&&e.message)==='admin_auth')return; saved.textContent='Save failed'; });
-      });
-    });
-    recalc();
   }
 
   document.getElementById('loginBtn').addEventListener('click',submitLogin);
