@@ -314,6 +314,26 @@ test('revenue: a channel defaults to its specialists, even ones not assigned to 
   assert.equal(m.Cy || 0, 0, 'Cy loses c2 Paid Search to the specialist');
 });
 
+test('revenue: an "everyone" channel defaults to the client’s assignees, over specialists', async () => {
+  const w = await published();
+  const H = { 'x-admin-pass': ADMIN_PASSWORD };
+  // Mark Paid Search as an "everyone" channel, and make Aric a PS specialist.
+  const chans = w.g.adminRevenue().channels.map((c) => ({ id: c.id, name: c.name, active: true, everyone: c.id === 'ch_ps' }));
+  w.g.doPost({ postData: { contents: JSON.stringify({ key: SECRET, action: 'saveChannels', channels: chans }) } });
+  w.g.doPost({ postData: { contents: JSON.stringify({ key: SECRET, action: 'saveTeamSkills', userId: 'u1', channelIds: ['ch_ps'] }) } });
+  await w.flush();
+  const r = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.deepStrictEqual(r, plain(w.g.adminRevenue()));
+  assert.equal(r.channels.find((c) => c.id === 'ch_ps').everyone, true);
+  const m = {}; r.byPerson.forEach((p) => { m[p.name] = p.total; });
+  // c2 Paid Search (no explicit owner) → everyone → c2 assignees u2+u3 (3000 each), NOT the PS
+  // specialist u1. c1 Paid Search stays its explicit owner u1 (5000). c1 AI SEO (not everyone, no
+  // specialist) → c1 assignees u1+u2 (1000 each). c1 Meta explicit u2 (3000).
+  assert.equal(m.Aric, 6000, 'Aric: c1 ps 5000 + c1 seo 1000 — not c2 ps');
+  assert.equal(m.Bea, 7000, 'Bea: c1 seo 1000 + c1 meta 3000 + c2 ps 3000');
+  assert.equal(m.Cy, 3000, 'Cy keeps his half of c2 Paid Search');
+});
+
 test('revenue: unchecking a client (inactive) removes it from every revenue view', async () => {
   const w = await published();
   const H = { 'x-admin-pass': ADMIN_PASSWORD };
