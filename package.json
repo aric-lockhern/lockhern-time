@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "description": "Lockhern Digital timesheet — Netlify-hosted pages + Apps Script backend, with a Netlify Functions + Blobs fast read path.",
-  "type": "module",
   "scripts": {
     "test": "node --test",
     "test:ui": "node tests-ui/page.mjs"
