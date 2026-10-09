@@ -192,3 +192,60 @@ test('a write republishes at once, so the fast path is never staler than Apps Sc
   await w.flush();
   assert.equal((await w.fast({ action: 'ping' })).body.published, true);
 });
+
+test('revenue: fast path matches Apps Script, and channel dollars roll up to the right people', async () => {
+  const w = await published();
+  const H = { 'x-admin-pass': ADMIN_PASSWORD };
+
+  // Same answer as the Apps Script builder, and gated like the other admin reads.
+  const fast = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.deepStrictEqual(fast, plain(w.g.adminRevenue()));
+  assert.equal((await w.fast({ action: 'adminRevenue' }, { 'x-admin-pass': 'nope' })).status, 401);
+
+  // c1 = 10k (2k AI SEO → fallback u1+u2, 5k Paid Search → u1, 3k Meta → u2);
+  // c2 = 6k Paid Search → fallback u2+u3.  Expected managed revenue:
+  //   Aric  = 1000 (seo) + 5000 (ps)            = 6000
+  //   Bea   = 1000 (seo) + 3000 (meta) + 3000   = 7000
+  //   Cy    = 3000 (c2 ps)                       = 3000
+  const byName = {}; fast.byPerson.forEach((p) => { byName[p.name] = p.total; });
+  assert.deepEqual(byName, { Bea: 7000, Aric: 6000, Cy: 3000 });
+  assert.deepEqual(fast.byPerson.map((p) => p.name), ['Bea', 'Aric', 'Cy'], 'sorted by managed revenue');
+  assert.equal(fast.unassigned, 0, 'every funded channel has an owner (explicit or fallback)');
+  assert.deepEqual(fast.totals, { monthly: 16000, allocated: 16000, attributed: 16000 });
+
+  // Assigning c2's Paid Search explicitly to Cy moves that 6k off the fallback (Bea+Cy).
+  w.g.doPost({ postData: { contents: JSON.stringify({
+    key: SECRET, action: 'saveChannelOwners', clientId: 'c2', channelId: 'ch_ps', userIds: ['u3'],
+  }) } });
+  await w.flush();
+  const after = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.deepStrictEqual(after, plain(w.g.adminRevenue()), 'still matches Apps Script after the write');
+  const m2 = {}; after.byPerson.forEach((p) => { m2[p.name] = p.total; });
+  assert.equal(m2.Cy, 6000, 'Cy now owns all of c2 Paid Search');
+  assert.equal(m2.Bea, 4000, 'Bea keeps only her c1 channels');
+});
+
+test('revenue: editing the split and channels republishes and re-attributes', async () => {
+  const w = await published();
+  const H = { 'x-admin-pass': ADMIN_PASSWORD };
+
+  // Re-split c1: move everything to Meta (Bea). Aric loses his Paid Search 5k; keeps nothing on c1
+  // except his half of a now-zero AI SEO. Bea gets all 10k of c1.
+  w.g.doPost({ postData: { contents: JSON.stringify({
+    key: SECRET, action: 'saveClientRevenue', clientId: 'c1', monthly: 10000, notes: '',
+    splits: { ch_meta: 10000 },
+  }) } });
+  await w.flush();
+  const r = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.deepStrictEqual(r, plain(w.g.adminRevenue()));
+  const m = {}; r.byPerson.forEach((p) => { m[p.name] = p.total; });
+  assert.equal(m.Bea, 13000, 'Bea: 10k of c1 Meta + her 3k share of c2 Paid Search');
+  assert.ok(!m.Aric, 'Aric has no c1 channels any more');
+
+  // Removing a channel keeps it out of the active list but doesn't crash the rollup.
+  const chans = w.g.adminRevenue().channels.filter((c) => c.name !== 'Meta').map((c) => ({ id: c.id, name: c.name, active: true }));
+  w.g.doPost({ postData: { contents: JSON.stringify({ key: SECRET, action: 'saveChannels', channels: chans }) } });
+  await w.flush();
+  const r2 = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.ok(!r2.channels.some((c) => c.name === 'Meta'), 'Meta no longer an active channel');
+});

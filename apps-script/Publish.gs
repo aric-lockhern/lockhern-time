@@ -45,7 +45,8 @@ function hexDigest_(s) {
 function pubVersion_() {
   var ss = SpreadsheetApp.getActive();
   var parts = [fridayOf_(new Date())];
-  [DB.TEAM, DB.CLIENTS, DB.ASSIGN, DB.SETTINGS, DB.ENTRIES].forEach(function (name) {
+  [DB.TEAM, DB.CLIENTS, DB.ASSIGN, DB.SETTINGS, DB.ENTRIES,
+   DB.CHANNELS, DB.REVENUE, DB.SPLIT, DB.OWNERS].forEach(function (name) {
     var sh = ss.getSheetByName(name);
     if (!sh || sh.getLastRow() < 1) { parts.push(name + ':0'); return; }
     parts.push(name + ':' + hexDigest_(JSON.stringify(sh.getDataRange().getValues())));
@@ -92,7 +93,8 @@ function buildSnapshot_() {
       load: adminLoad(),
       months: {ok: true, months: months},
       matrix: {week: matrixWeek, month: matrixMonth},
-      status: status
+      status: status,
+      revenue: adminRevenue()
     }
   };
 }

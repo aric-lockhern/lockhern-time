@@ -20,7 +20,7 @@ import { gunzipSync } from 'node:zlib';
 import { timingSafeEqual } from 'node:crypto';
 
 // Read actions the admin console makes — gated by ADMIN_PASSWORD, same list as proxy.js reads.
-const ADMIN_READS = { adminLoad: 1, adminMatrix: 1, adminMonths: 1, adminStatus: 1 };
+const ADMIN_READS = { adminLoad: 1, adminMatrix: 1, adminMonths: 1, adminStatus: 1, adminRevenue: 1 };
 // Read actions the employee page makes — open, gated only by the private ?user=<slug> link.
 const EMP_READS = { empList: 1, empLoad: 1 };
 
@@ -85,6 +85,7 @@ export async function handle(req, store, env) {
       const hit = a.status && a.status[String(p.week || '')];
       return hit ? ok(hit) : fallback('status not published for this week');
     }
+    if (action === 'adminRevenue') return a.revenue ? ok(a.revenue) : fallback('revenue not published');
   }
 
   // Unknown or non-read action: let Apps Script handle it.

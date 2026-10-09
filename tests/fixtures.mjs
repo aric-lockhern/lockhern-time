@@ -60,5 +60,31 @@ export function tabs() {
       ['mondayHour', '10'],
       ['fromName', 'Lockhern Digital'],
     ],
+    // Account ownership + revenue. c1 pays 10k split 2k/5k/3k; Paid Search → Aric, Meta → Bea,
+    // AI SEO has no explicit owner (falls back to c1's assignees u1+u2). c2 pays 6k all Paid
+    // Search, no explicit owner (falls back to c2's assignees u2+u3).
+    Channels: [
+      ['id', 'name', 'active'],
+      ['ch_seo', 'AI SEO', true],
+      ['ch_ps', 'Paid Search', true],
+      ['ch_meta', 'Meta', true],
+    ],
+    Revenue: [
+      ['clientId', 'monthly', 'notes'],
+      ['c1', 10000, ''],
+      ['c2', 6000, ''],
+    ],
+    RevenueSplit: [
+      ['clientId', 'channelId', 'amount'],
+      ['c1', 'ch_seo', 2000],
+      ['c1', 'ch_ps', 5000],
+      ['c1', 'ch_meta', 3000],
+      ['c2', 'ch_ps', 6000],
+    ],
+    ChannelOwners: [
+      ['clientId', 'channelId', 'userId'],
+      ['c1', 'ch_ps', 'u1'],
+      ['c1', 'ch_meta', 'u2'],
+    ],
   };
 }
