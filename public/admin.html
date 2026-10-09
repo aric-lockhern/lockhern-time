@@ -73,6 +73,12 @@
   .owners input{display:none;}
   .chaneditrow{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
   .chaneditrow input{min-width:200px;}
+  .revclient{padding:12px 0;border-bottom:1px solid var(--line);}
+  .revclient:last-child{border-bottom:none;}
+  .rchead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px;}
+  .rchead .cname{font-weight:700;min-width:160px;font-size:15px;}
+  .rchead .alloc{font-size:12px;color:var(--muted);}
+  .rchead .csaved{font-size:12px;color:var(--accent);margin-left:auto;min-width:60px;text-align:right;}
   /* top progress bar — visible whenever a request is in flight */
   #loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:9999;opacity:0;transition:opacity .15s;pointer-events:none;overflow:hidden;}
   #loadbar.on{opacity:1;}
@@ -887,13 +893,15 @@
       '<div class="chaneditrow"><input id="chNew" placeholder="Add a channel…"><button class="act" id="chAdd">Add</button>'+
       '<button class="act" id="chSave" style="background:#4a90a4">Save channels</button></div></div>';
 
-    // Client plan
-    var clientOpts=REV.clients.map(function(c){return '<option value="'+esc(c.id)+'"'+(c.id===revClient?' selected':'')+'>'+esc(c.name)+'</option>';}).join('');
-    var planCard='<div class="card"><div class="drillhead"><h2>Client revenue &amp; ownership</h2>'+
-      '<select id="revClientSel">'+clientOpts+'</select></div>'+
-      '<div id="revPlan"></div></div>';
+    // Every client, inline — no dropdown.
+    var blocks=REV.clients.length
+      ? REV.clients.map(revClientBlockHtml).join('')
+      : '<div class="muted">No active clients yet. Add them on the Clients tab.</div>';
+    var clientsCard='<div class="card"><h2>Client revenue &amp; ownership</h2>'+
+      '<div class="sub" style="margin-bottom:10px">For each client: set the monthly retainer, split it across channels ($), and tick who owns each channel (prefilled from assignments). Changes save as you go.</div>'+
+      '<div id="revClients">'+blocks+'</div></div>';
 
-    document.getElementById('revSetup').innerHTML=channelsCard+planCard;
+    document.getElementById('revSetup').innerHTML=channelsCard+clientsCard;
 
     // wire channels
     document.getElementById('chAdd').addEventListener('click',function(){
@@ -915,14 +923,13 @@
       apiPost({action:'saveChannels',channels:list}).then(function(r){ if(r&&r.ok){ REV=r; renderRevenue(); toast('Channels saved.'); } else toast('Save failed'+(r&&r.detail?': '+r.detail:'')); }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; toast('Save failed: '+e); });
     });
 
-    document.getElementById('revClientSel').addEventListener('change',function(){ revClient=this.value; renderRevPlan(); });
-    renderRevPlan();
+    // wire every client block
+    REV.clients.forEach(function(c){ wireRevClient(c.id); });
   }
 
-  function renderRevPlan(){
-    var host=document.getElementById('revPlan'); if(!host)return;
-    var cid=revClient; if(!cid){ host.innerHTML='<div class="muted">Add a client first.</div>'; return; }
-    var r=(REV.revenue[cid])||{monthly:0,notes:'',splits:{}};
+  // One client's row in Setup: name, monthly retainer, per-channel split ($ + %), and owner chips.
+  function revClientBlockHtml(c){
+    var cid=c.id, r=(REV.revenue[cid])||{monthly:0,notes:'',splits:{}};
     var rows=REV.channels.map(function(ch){
       var amt=Number((r.splits||{})[ch.id]||0);
       var own=revEffOwners(cid,ch.id);
@@ -931,54 +938,54 @@
         return '<label class="'+(on?'on':'')+'"><input type="checkbox" data-ch="'+esc(ch.id)+'" data-u="'+esc(t.id)+'"'+(on?' checked':'')+'>'+esc(t.name)+'</label>';
       }).join('');
       return '<div class="chanrow"><span class="cn">'+esc(ch.name)+'</span>'+
-        '<span>$ <input class="amt splitAmt" data-ch="'+esc(ch.id)+'" type="number" min="0" step="100" value="'+(amt||'')+'" placeholder="0"></span>'+
+        '<span>$ <input class="amt camt" data-ch="'+esc(ch.id)+'" type="number" min="0" step="100" value="'+(amt||'')+'" placeholder="0"></span>'+
         '<span class="pct" data-pctfor="'+esc(ch.id)+'"></span>'+
         '<span class="owners" data-ownfor="'+esc(ch.id)+'">'+chips+'</span></div>';
     }).join('');
-    host.innerHTML=
-      '<div class="chanrow" style="border-bottom:2px solid var(--line)"><span class="cn">Monthly retainer</span>'+
-        '<span>$ <input class="amt" id="revMonthly" type="number" min="0" step="100" value="'+(r.monthly||'')+'" placeholder="0"></span>'+
-        '<span class="pct" id="revAlloc"></span>'+
-        '<span class="muted" style="font-size:12px">total the channels below should add up to</span></div>'+
-      rows+
-      '<div style="margin-top:12px;display:flex;gap:10px;align-items:center"><button class="act" id="revSave">Save revenue</button>'+
-      '<span class="sub" id="revPlanMsg"></span></div>';
+    return '<div class="revclient" data-cid="'+esc(cid)+'">'+
+      '<div class="rchead"><span class="cname">'+esc(c.name)+'</span>'+
+        '<span>$ <input class="amt cmonthly" type="number" min="0" step="100" value="'+(r.monthly||'')+'" placeholder="0"> /mo</span>'+
+        '<span class="alloc"></span><span class="csaved"></span></div>'+
+      rows+'</div>';
+  }
 
+  function wireRevClient(cid){
+    var block=document.querySelector('#revClients .revclient[data-cid="'+cid+'"]'); if(!block)return;
+    var saved=block.querySelector('.csaved'), monthlyEl=block.querySelector('.cmonthly'), timer=null;
     function recalc(){
-      var monthly=Number(document.getElementById('revMonthly').value)||0, sum=0;
-      document.querySelectorAll('#revPlan .splitAmt').forEach(function(inp){
+      var monthly=Number(monthlyEl.value)||0, sum=0;
+      block.querySelectorAll('.camt').forEach(function(inp){
         var a=Number(inp.value)||0; sum+=a;
-        var pct=monthly>0?Math.round(a/monthly*100):0;
-        var el=document.querySelector('#revPlan .pct[data-pctfor="'+inp.getAttribute('data-ch')+'"]'); if(el)el.textContent=monthly>0?(pct+'%'):'';
+        var el=block.querySelector('.pct[data-pctfor="'+inp.getAttribute('data-ch')+'"]'); if(el)el.textContent=monthly>0?(Math.round(a/monthly*100)+'%'):'';
       });
-      var al=document.getElementById('revAlloc');
-      var diff=monthly-sum;
-      al.textContent=fmtMoney(sum)+' allocated'+(Math.abs(diff)>=1?(diff>0?('  ·  '+fmtMoney(diff)+' left'):('  ·  '+fmtMoney(-diff)+' over')):'  ·  balanced');
+      var al=block.querySelector('.alloc'), diff=monthly-sum;
+      al.textContent=(monthly||sum)?(fmtMoney(sum)+' allocated'+(Math.abs(diff)>=1?(diff>0?('  ·  '+fmtMoney(diff)+' left'):('  ·  '+fmtMoney(-diff)+' over')):'  ·  balanced')):'';
       al.style.color=diff<-0.5?'#b3261e':'var(--muted)';
     }
-    document.getElementById('revMonthly').addEventListener('input',recalc);
-    document.querySelectorAll('#revPlan .splitAmt').forEach(function(inp){ inp.addEventListener('input',recalc); });
-    recalc();
-
-    // owners save instantly per channel
-    document.querySelectorAll('#revPlan .owners input').forEach(function(cb){
+    function saveNow(){
+      var monthly=Number(monthlyEl.value)||0, splits={};
+      block.querySelectorAll('.camt').forEach(function(inp){ var a=Number(inp.value)||0; if(a>0) splits[inp.getAttribute('data-ch')]=a; });
+      var r=(REV.revenue[cid])||{notes:''};
+      saved.textContent='Saving…';
+      apiPost({action:'saveClientRevenue',clientId:cid,monthly:monthly,notes:r.notes||'',splits:splits})
+        .then(function(r2){ if(r2&&r2.ok){ REV=r2; saved.textContent='Saved ✓'; } else saved.textContent='Save failed'; })
+        .catch(function(e){ if(String(e&&e.message)==='admin_auth')return; saved.textContent='Save failed'; });
+    }
+    function saveSoon(){ clearTimeout(timer); saved.textContent='…'; timer=setTimeout(saveNow,700); }
+    monthlyEl.addEventListener('input',recalc); monthlyEl.addEventListener('change',saveSoon);
+    block.querySelectorAll('.camt').forEach(function(inp){ inp.addEventListener('input',recalc); inp.addEventListener('change',saveSoon); });
+    block.querySelectorAll('.owners input').forEach(function(cb){
       cb.addEventListener('change',function(){
-        var chid=cb.getAttribute('data-ch'); var picks=[];
-        document.querySelectorAll('#revPlan .owners input[data-ch="'+chid+'"]').forEach(function(x){ if(x.checked)picks.push(x.getAttribute('data-u')); });
+        var chid=cb.getAttribute('data-ch'), picks=[];
+        block.querySelectorAll('.owners input[data-ch="'+chid+'"]').forEach(function(x){ if(x.checked)picks.push(x.getAttribute('data-u')); });
         cb.closest('label').classList.toggle('on',cb.checked);
-        apiPost({action:'saveChannelOwners',clientId:cid,channelId:chid,userIds:picks}).then(function(r2){ if(r2&&r2.ok){ REV=r2; document.getElementById('revPlanMsg').textContent='Owners updated.'; } }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; toast('Owner save failed: '+e); });
+        saved.textContent='Saving…';
+        apiPost({action:'saveChannelOwners',clientId:cid,channelId:chid,userIds:picks})
+          .then(function(r2){ if(r2&&r2.ok){ REV=r2; saved.textContent='Saved ✓'; } else saved.textContent='Save failed'; })
+          .catch(function(e){ if(String(e&&e.message)==='admin_auth')return; saved.textContent='Save failed'; });
       });
     });
-
-    document.getElementById('revSave').addEventListener('click',function(){
-      var monthly=Number(document.getElementById('revMonthly').value)||0, splits={};
-      document.querySelectorAll('#revPlan .splitAmt').forEach(function(inp){ var a=Number(inp.value)||0; if(a>0) splits[inp.getAttribute('data-ch')]=a; });
-      document.getElementById('revPlanMsg').textContent='Saving…';
-      apiPost({action:'saveClientRevenue',clientId:cid,monthly:monthly,notes:r.notes||'',splits:splits}).then(function(r2){
-        if(r2&&r2.ok){ REV=r2; document.getElementById('revPlanMsg').textContent='Saved ✓'; renderRevenue(); }
-        else document.getElementById('revPlanMsg').textContent='Save failed'+(r2&&r2.detail?': '+r2.detail:'');
-      }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; document.getElementById('revPlanMsg').textContent='Save failed: '+e; });
-    });
+    recalc();
   }
 
   document.getElementById('loginBtn').addEventListener('click',submitLogin);
