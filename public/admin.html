@@ -43,6 +43,36 @@
   canvas{max-height:320px;}
   table.brk tr.clickable{cursor:pointer;}
   table.brk tr.clickable:hover td{background:#f4f7f5;}
+  .slownote{margin:10px 0 0;padding:10px 14px;background:#fff8ec;border:1px solid #f0e2c0;border-radius:10px;font-size:13px;color:#8a6d1f;}
+  /* revenue / ownership */
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .seg button{font:inherit;font-weight:600;font-size:13px;border:none;background:#fff;color:var(--muted);padding:8px 14px;cursor:pointer;}
+  .seg button.on{background:var(--accent);color:#fff;}
+  .revkpi{display:flex;gap:26px;flex-wrap:wrap;margin-bottom:4px;}
+  .revkpi .n{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;} .revkpi .l{font-size:12px;color:var(--muted);}
+  .warnpill{display:inline-block;font-size:12px;padding:3px 10px;border-radius:99px;background:#fdecea;color:#b3261e;font-weight:600;}
+  table.rev{width:100%;border-collapse:collapse;font-size:14px;}
+  table.rev th,table.rev td{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;}
+  table.rev td.num,table.rev th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+  table.rev tr.person{cursor:pointer;} table.rev tr.person:hover td{background:#f4f7f5;}
+  table.rev tr.detail td{background:#fafbfc;color:var(--muted);font-size:13px;}
+  .revbar{height:8px;border-radius:99px;background:#eef1f4;overflow:hidden;min-width:90px;} .revbar>i{display:block;height:100%;background:var(--accent);}
+  .mapscroll{overflow-x:auto;}
+  table.map{border-collapse:collapse;font-size:13px;min-width:100%;}
+  table.map th{background:#2f6f4f;color:#fff;font-weight:700;padding:8px 10px;text-align:left;font-size:12px;white-space:nowrap;}
+  table.map td{border:1px solid var(--line);padding:6px 10px;vertical-align:top;white-space:nowrap;}
+  table.map td .cm{color:var(--muted);font-variant-numeric:tabular-nums;font-size:12px;}
+  table.map tr.foot td{background:#eef4f0;font-weight:700;font-variant-numeric:tabular-nums;text-align:center;}
+  .chanrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line);}
+  .chanrow .cn{min-width:120px;font-weight:600;}
+  .chanrow input.amt{width:120px;}
+  .chanrow .pct{color:var(--muted);font-size:12px;min-width:48px;}
+  .owners{display:flex;flex-wrap:wrap;gap:6px;}
+  .owners label{font-size:12px;background:var(--chip);border-radius:8px;padding:4px 9px;cursor:pointer;user-select:none;}
+  .owners label.on{background:var(--accent-soft);outline:1px solid var(--accent);}
+  .owners input{display:none;}
+  .chaneditrow{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+  .chaneditrow input{min-width:200px;}
   /* top progress bar — visible whenever a request is in flight */
   #loadbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:9999;opacity:0;transition:opacity .15s;pointer-events:none;overflow:hidden;}
   #loadbar.on{opacity:1;}
@@ -75,8 +105,10 @@
 <div class="wrap">
   <h1>Time Tracker — Admin</h1>
   <div class="sub" id="note">Loading…</div>
+  <div class="slownote" id="slowNote" style="display:none"></div>
   <nav class="tabs">
     <button data-tab="reports" class="active">Reports</button>
+    <button data-tab="revenue">Revenue</button>
     <button data-tab="workload">Workload</button>
     <button data-tab="status">Submissions</button>
     <button data-tab="team">Team</button>
@@ -124,6 +156,20 @@
       <table class="brk" id="drillTable" style="display:none"><thead><tr><th>Person</th><th class="num">Hours</th><th class="pctcell">Share</th></tr></thead>
         <tbody id="drillRows"></tbody></table>
     </div>
+  </section>
+
+  <section class="panel" id="p-revenue">
+    <div class="filters">
+      <div class="seg" id="revSeg">
+        <button data-v="person" class="on">Revenue by person</button>
+        <button data-v="map">Ownership map</button>
+        <button data-v="setup">Setup</button>
+      </div>
+      <span class="sub" id="revSummary"></span>
+    </div>
+    <div id="revPerson" class="revview"></div>
+    <div id="revMap" class="revview" style="display:none"></div>
+    <div id="revSetup" class="revview" style="display:none"></div>
   </section>
 
   <section class="panel" id="p-workload">
@@ -252,14 +298,79 @@
     else showLogin();
   }
 
+  // ---- Fast read path ---------------------------------------------------------------
+  // Admin reads try the site's own Netlify function first (served from a published snapshot — fast
+  // and reliable) and fall back to Apps Script (via /api/proxy) when it can't answer. The fast path
+  // enforces the SAME ADMIN_PASSWORD gate (x-admin-pass); a wrong password is a real 401, not a
+  // fallback. Writes always go to Apps Script. See apps-script/Publish.gs.
+  var FAST = /^https?:$/.test(location.protocol) ? (location.origin + '/api') : '';
+  var FAST_OFF = false;
+  var FAST_READS = {adminLoad:1, adminMatrix:1, adminMonths:1, adminStatus:1, adminRevenue:1};
+
+  function qstr(action, params){ return new URLSearchParams(Object.assign({action:action}, params||{})).toString(); }
+  function wait(ms){ return new Promise(function(res){ setTimeout(res, ms); }); }
+  function retryFetch(url, opts, tries){
+    return fetch(url, opts||undefined).then(function(r){
+      if(tries>1 && (r.status===404||r.status===429||r.status>=500)) return wait(600).then(function(){return retryFetch(url,opts,tries-1);});
+      return r;
+    }, function(err){ if(tries>1) return wait(600).then(function(){return retryFetch(url,opts,tries-1);}); throw err; });
+  }
+
+  function fastRead(action, params){
+    return fetch(FAST+'?'+qstr(action, params),{headers:adminHeaders()}).then(function(r){
+      if(r.status===401) return Promise.reject('admin_auth');               // genuine refusal — don't fall back
+      if(r.status===404){ FAST_OFF=true; return Promise.reject('nofast'); } // function not deployed
+      var ct=r.headers.get('content-type')||'';
+      if(!r.ok || ct.indexOf('json')<0) return Promise.reject('notjson');
+      return r.json();
+    }).then(function(j){ if(!j || j.fallback) return Promise.reject('fallback'); return j; });
+  }
+  function slowRead(action, params){
+    var t=setTimeout(function(){ slowNote(true); }, 8000);
+    function done(){ clearTimeout(t); slowNote(false); }
+    var tries = FAST_READS[action] ? 4 : 1;   // retry reads only; addClient/addMember etc. run once (not idempotent)
+    return retryFetch('/api/proxy?'+qstr(action, params), {headers:adminHeaders()}, tries)
+      .then(authCheck)
+      .then(function(r){ return r.json(); })
+      .then(function(j){ done(); return j; }, function(e){ done(); throw e; });
+  }
   function api(action, params){
     startLoad();
-    var qs=new URLSearchParams(Object.assign({action:action},params||{})).toString();
-    return fetch('/api/proxy?'+qs,{headers:adminHeaders()}).then(authCheck).then(function(r){return r.json();}).finally(endLoad);
+    var p;
+    if(!FAST_OFF && FAST && FAST_READS[action]){
+      p = fastRead(action, params).catch(function(e){
+        if(e==='admin_auth'){ handleAuthFail(); throw new Error('admin_auth'); }  // wrong password: stop, show login
+        return slowRead(action, params);
+      });
+    } else {
+      p = slowRead(action, params);
+    }
+    return p.finally(endLoad);
   }
   function apiPost(payload){
-    startLoad();
-    return fetch('/api/proxy',{method:'POST',headers:adminHeaders({'Content-Type':'application/json'}),body:JSON.stringify(payload)}).then(authCheck).then(function(r){return r.json();}).finally(endLoad);
+    startLoad();   // writes stay on Apps Script; retry once on a flaky 404/5xx
+    return retryFetch('/api/proxy',{method:'POST',headers:adminHeaders({'Content-Type':'application/json'}),body:JSON.stringify(payload)}, 2)
+      .then(authCheck).then(function(r){return r.json();}).finally(endLoad);
+  }
+  function fmtAgo(ms){
+    if(!ms) return 'just now';
+    var s=Math.max(0,Math.round((Date.now()-ms)/1000));
+    if(s<90) return s+'s ago';
+    var m=Math.round(s/60); if(m<90) return m+' min ago';
+    return Math.round(m/60)+'h ago';
+  }
+  // Admin slow note explains WHY the fast path isn't serving this request.
+  function slowNote(on){
+    var el=document.getElementById('slowNote'); if(!el) return;
+    if(!on){ el.style.display='none'; return; }
+    el.style.display='block';
+    el.textContent='Google’s servers are being slow — still loading…';
+    if(!FAST) return;
+    fetch(FAST+'?action=ping').then(function(r){ return r.ok ? r.json() : null; }).then(function(j){
+      if(!j){ el.textContent='Google is slow, and fast loading isn’t answering — the Netlify function may not be deployed yet.'; return; }
+      if(!j.published){ el.textContent='Google is slow. Fast loading is set up but nothing has published yet — run “Fast loading: set up” from the Sheet menu and add INGEST_SECRET in Netlify, then redeploy.'; return; }
+      el.textContent='Google is slow. Fast loading is on ('+j.employees+' people, last published '+fmtAgo(j.at)+') but couldn’t answer this request, so it’s asking Apps Script directly.';
+    }).catch(function(){});
   }
 
   function boot(){
@@ -277,7 +388,9 @@
       document.querySelectorAll('nav.tabs button').forEach(function(x){x.classList.remove('active');});
       document.querySelectorAll('.panel').forEach(function(x){x.classList.remove('active');});
       b.classList.add('active');
-      document.getElementById('p-'+b.getAttribute('data-tab')).classList.add('active');
+      var tab=b.getAttribute('data-tab');
+      document.getElementById('p-'+tab).classList.add('active');
+      if(tab==='revenue') ensureRevenue();
     });
   });
 
@@ -671,6 +784,202 @@
   function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function copy(t){ navigator.clipboard.writeText(t).then(function(){toast('Link copied.');},function(){toast('Copy failed.');}); }
   var toastT; function toast(m){ var el=document.getElementById('toast'); el.textContent=m; el.classList.add('show'); clearTimeout(toastT); toastT=setTimeout(function(){el.classList.remove('show');},1800); }
+
+  // ============================================================
+  //  REVENUE & ACCOUNT OWNERSHIP
+  //  One call (adminRevenue) returns channels, clients, team, assignments, the raw
+  //  revenue/owners config and a server-computed rollup (byPerson/byClient). The three
+  //  views render from it; edits save through Apps Script and return a fresh snapshot.
+  // ============================================================
+  var REV=null, REVVIEW='person', revClient='', revLoaded=false;
+  function fmtMoney(n){ return '$'+Math.round(Number(n)||0).toLocaleString(); }
+  function revAssignees(cid){ return REV.assignments.filter(function(a){return String(a.clientId)===String(cid);}).map(function(a){return String(a.userId);}); }
+  function revEffOwners(cid,chid){
+    var o=REV.owners[cid]&&REV.owners[cid][chid];
+    if(o&&o.length) return o.map(String);
+    return revAssignees(cid);
+  }
+  function ensureRevenue(){
+    if(revLoaded) return;
+    document.getElementById('revPerson').innerHTML='<div class="card"><div class="muted">Loading revenue…</div></div>';
+    api('adminRevenue').then(function(r){
+      if(!r||!r.ok){ document.getElementById('revPerson').innerHTML='<div class="card"><div class="muted">Couldn’t load revenue'+(r&&r.detail?': '+esc(r.detail):'')+'.</div></div>'; return; }
+      REV=r; revLoaded=true;
+      if(!revClient && REV.clients.length) revClient=REV.clients[0].id;
+      renderRevenue();
+    }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; document.getElementById('revPerson').innerHTML='<div class="card"><div class="muted">Load error: '+esc(String(e))+'</div></div>'; });
+  }
+  function setRevView(v){
+    REVVIEW=v;
+    document.querySelectorAll('#revSeg button').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-v')===v); });
+    ['person','map','setup'].forEach(function(k){ document.getElementById('rev'+k.charAt(0).toUpperCase()+k.slice(1)).style.display = (k===v?'':'none'); });
+    renderRevenue();
+  }
+  document.querySelectorAll('#revSeg button').forEach(function(b){ b.addEventListener('click',function(){ setRevView(b.getAttribute('data-v')); }); });
+
+  function renderRevenue(){
+    if(!REV) return;
+    var t=REV.totals||{monthly:0,allocated:0,attributed:0};
+    document.getElementById('revSummary').textContent=fmtMoney(t.attributed)+' / mo attributed to people'+(REV.unassigned>0?('  ·  '+fmtMoney(REV.unassigned)+' on channels with no owner'):'');
+    if(REVVIEW==='person') renderRevPerson();
+    else if(REVVIEW==='map') renderRevMap();
+    else renderRevSetup();
+  }
+
+  function renderRevPerson(){
+    var t=REV.totals||{}, max=REV.byPerson.reduce(function(m,p){return Math.max(m,p.total);},0)||1;
+    var rows=REV.byPerson.map(function(p){
+      var pct=Math.round(p.total/max*100);
+      var detail=p.clients.length
+        ? p.clients.map(function(c){
+            var chans=c.channels.map(function(ch){return esc(ch.name)+' '+fmtMoney(ch.amount);}).join('  ·  ');
+            return '<div style="padding:2px 0">'+esc(c.name)+' — <b>'+fmtMoney(c.total)+'</b> <span class="muted">('+chans+')</span></div>';
+          }).join('')
+        : '<div class="muted">No revenue attributed.</div>';
+      return '<tr class="person" data-id="'+esc(p.id)+'"><td>'+esc(p.name)+'</td>'+
+        '<td class="num">'+fmtMoney(p.total)+'</td><td class="num">'+p.count+'</td>'+
+        '<td style="min-width:120px"><div class="revbar"><i style="width:'+pct+'%"></i></div></td></tr>'+
+        '<tr class="detail" data-for="'+esc(p.id)+'" style="display:none"><td colspan="4">'+detail+'</td></tr>';
+    }).join('');
+    document.getElementById('revPerson').innerHTML=
+      '<div class="card"><div class="revkpi">'+
+        '<div><div class="n">'+fmtMoney(t.attributed)+'</div><div class="l">Attributed / mo</div></div>'+
+        '<div><div class="n">'+fmtMoney(t.monthly)+'</div><div class="l">Total retainers / mo</div></div>'+
+        '<div><div class="n">'+REV.byPerson.filter(function(p){return p.total>0;}).length+'</div><div class="l">People with revenue</div></div>'+
+        (REV.unassigned>0?'<div><div class="n"><span class="warnpill">'+fmtMoney(REV.unassigned)+'</span></div><div class="l">No channel owner</div></div>':'')+
+      '</div></div>'+
+      '<div class="card"><h2>Managed revenue by person</h2>'+
+        '<div class="sub" style="margin-bottom:8px">Each channel’s dollars go to the people who own it (defaulting to the client’s assignees). Click a person to see the breakdown.</div>'+
+        '<table class="rev"><thead><tr><th>Person</th><th class="num">Managed / mo</th><th class="num">Clients</th><th>Share</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    document.querySelectorAll('#revPerson tr.person').forEach(function(tr){
+      tr.addEventListener('click',function(){ var d=document.querySelector('#revPerson tr.detail[data-for="'+tr.getAttribute('data-id')+'"]'); if(d)d.style.display=(d.style.display==='none'?'table-row':'none'); });
+    });
+  }
+
+  function renderRevMap(){
+    var people=REV.byPerson;
+    var maxRows=people.reduce(function(m,p){return Math.max(m,p.clients.length);},0);
+    var head='<tr>'+people.map(function(p){return '<th>'+esc(p.name)+'</th>';}).join('')+'</tr>';
+    var body='';
+    for(var i=0;i<maxRows;i++){
+      body+='<tr>'+people.map(function(p){
+        var c=p.clients[i];
+        return '<td>'+(c?esc(c.name)+' <span class="cm">'+fmtMoney(c.total)+'</span>':'')+'</td>';
+      }).join('')+'</tr>';
+    }
+    var foot='<tr class="foot">'+people.map(function(p){return '<td>'+p.count+' · '+fmtMoney(p.total)+'</td>';}).join('')+'</tr>';
+    document.getElementById('revMap').innerHTML=
+      '<div class="card"><h2>Account ownership map</h2>'+
+      '<div class="sub" style="margin-bottom:10px">Clients each person manages, with the revenue attributed to them. Bottom row: client count · managed revenue.</div>'+
+      (people.length?'<div class="mapscroll"><table class="map"><thead>'+head+'</thead><tbody>'+body+foot+'</tbody></table></div>':'<div class="muted">No people yet.</div>')+
+      '</div>';
+  }
+
+  function renderRevSetup(){
+    // Channels editor
+    var chans=REV.channels.map(function(c){
+      return '<div class="chaneditrow"><input class="chName" data-id="'+esc(c.id)+'" value="'+esc(c.name)+'">'+
+        '<button class="link chDel" data-id="'+esc(c.id)+'">Remove</button></div>';
+    }).join('');
+    var channelsCard='<div class="card"><h2>Channels</h2>'+
+      '<div class="sub" style="margin-bottom:10px">Service lines revenue is split across. Removing one keeps past splits intact but hides it going forward.</div>'+
+      '<div id="chanList">'+chans+'</div>'+
+      '<div class="chaneditrow"><input id="chNew" placeholder="Add a channel…"><button class="act" id="chAdd">Add</button>'+
+      '<button class="act" id="chSave" style="background:#4a90a4">Save channels</button></div></div>';
+
+    // Client plan
+    var clientOpts=REV.clients.map(function(c){return '<option value="'+esc(c.id)+'"'+(c.id===revClient?' selected':'')+'>'+esc(c.name)+'</option>';}).join('');
+    var planCard='<div class="card"><div class="drillhead"><h2>Client revenue &amp; ownership</h2>'+
+      '<select id="revClientSel">'+clientOpts+'</select></div>'+
+      '<div id="revPlan"></div></div>';
+
+    document.getElementById('revSetup').innerHTML=channelsCard+planCard;
+
+    // wire channels
+    document.getElementById('chAdd').addEventListener('click',function(){
+      var v=document.getElementById('chNew').value.trim(); if(!v)return;
+      var list=document.getElementById('chanList');
+      var div=document.createElement('div'); div.className='chaneditrow';
+      div.innerHTML='<input class="chName" value="'+esc(v)+'"><button class="link chDel">Remove</button>';
+      list.appendChild(div); document.getElementById('chNew').value='';
+      div.querySelector('.chDel').addEventListener('click',function(){ div.remove(); });
+    });
+    document.querySelectorAll('#revSetup .chDel').forEach(function(b){ b.addEventListener('click',function(){ b.closest('.chaneditrow').remove(); }); });
+    document.getElementById('chSave').addEventListener('click',function(){
+      var list=[];
+      document.querySelectorAll('#chanList .chName').forEach(function(inp){
+        var name=inp.value.trim(); if(!name)return;
+        list.push({id:inp.getAttribute('data-id')||'', name:name, active:true});
+      });
+      toast('Saving channels…');
+      apiPost({action:'saveChannels',channels:list}).then(function(r){ if(r&&r.ok){ REV=r; renderRevenue(); toast('Channels saved.'); } else toast('Save failed'+(r&&r.detail?': '+r.detail:'')); }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; toast('Save failed: '+e); });
+    });
+
+    document.getElementById('revClientSel').addEventListener('change',function(){ revClient=this.value; renderRevPlan(); });
+    renderRevPlan();
+  }
+
+  function renderRevPlan(){
+    var host=document.getElementById('revPlan'); if(!host)return;
+    var cid=revClient; if(!cid){ host.innerHTML='<div class="muted">Add a client first.</div>'; return; }
+    var r=(REV.revenue[cid])||{monthly:0,notes:'',splits:{}};
+    var rows=REV.channels.map(function(ch){
+      var amt=Number((r.splits||{})[ch.id]||0);
+      var own=revEffOwners(cid,ch.id);
+      var chips=REV.team.map(function(t){
+        var on=own.indexOf(String(t.id))>=0;
+        return '<label class="'+(on?'on':'')+'"><input type="checkbox" data-ch="'+esc(ch.id)+'" data-u="'+esc(t.id)+'"'+(on?' checked':'')+'>'+esc(t.name)+'</label>';
+      }).join('');
+      return '<div class="chanrow"><span class="cn">'+esc(ch.name)+'</span>'+
+        '<span>$ <input class="amt splitAmt" data-ch="'+esc(ch.id)+'" type="number" min="0" step="100" value="'+(amt||'')+'" placeholder="0"></span>'+
+        '<span class="pct" data-pctfor="'+esc(ch.id)+'"></span>'+
+        '<span class="owners" data-ownfor="'+esc(ch.id)+'">'+chips+'</span></div>';
+    }).join('');
+    host.innerHTML=
+      '<div class="chanrow" style="border-bottom:2px solid var(--line)"><span class="cn">Monthly retainer</span>'+
+        '<span>$ <input class="amt" id="revMonthly" type="number" min="0" step="100" value="'+(r.monthly||'')+'" placeholder="0"></span>'+
+        '<span class="pct" id="revAlloc"></span>'+
+        '<span class="muted" style="font-size:12px">total the channels below should add up to</span></div>'+
+      rows+
+      '<div style="margin-top:12px;display:flex;gap:10px;align-items:center"><button class="act" id="revSave">Save revenue</button>'+
+      '<span class="sub" id="revPlanMsg"></span></div>';
+
+    function recalc(){
+      var monthly=Number(document.getElementById('revMonthly').value)||0, sum=0;
+      document.querySelectorAll('#revPlan .splitAmt').forEach(function(inp){
+        var a=Number(inp.value)||0; sum+=a;
+        var pct=monthly>0?Math.round(a/monthly*100):0;
+        var el=document.querySelector('#revPlan .pct[data-pctfor="'+inp.getAttribute('data-ch')+'"]'); if(el)el.textContent=monthly>0?(pct+'%'):'';
+      });
+      var al=document.getElementById('revAlloc');
+      var diff=monthly-sum;
+      al.textContent=fmtMoney(sum)+' allocated'+(Math.abs(diff)>=1?(diff>0?('  ·  '+fmtMoney(diff)+' left'):('  ·  '+fmtMoney(-diff)+' over')):'  ·  balanced');
+      al.style.color=diff<-0.5?'#b3261e':'var(--muted)';
+    }
+    document.getElementById('revMonthly').addEventListener('input',recalc);
+    document.querySelectorAll('#revPlan .splitAmt').forEach(function(inp){ inp.addEventListener('input',recalc); });
+    recalc();
+
+    // owners save instantly per channel
+    document.querySelectorAll('#revPlan .owners input').forEach(function(cb){
+      cb.addEventListener('change',function(){
+        var chid=cb.getAttribute('data-ch'); var picks=[];
+        document.querySelectorAll('#revPlan .owners input[data-ch="'+chid+'"]').forEach(function(x){ if(x.checked)picks.push(x.getAttribute('data-u')); });
+        cb.closest('label').classList.toggle('on',cb.checked);
+        apiPost({action:'saveChannelOwners',clientId:cid,channelId:chid,userIds:picks}).then(function(r2){ if(r2&&r2.ok){ REV=r2; document.getElementById('revPlanMsg').textContent='Owners updated.'; } }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; toast('Owner save failed: '+e); });
+      });
+    });
+
+    document.getElementById('revSave').addEventListener('click',function(){
+      var monthly=Number(document.getElementById('revMonthly').value)||0, splits={};
+      document.querySelectorAll('#revPlan .splitAmt').forEach(function(inp){ var a=Number(inp.value)||0; if(a>0) splits[inp.getAttribute('data-ch')]=a; });
+      document.getElementById('revPlanMsg').textContent='Saving…';
+      apiPost({action:'saveClientRevenue',clientId:cid,monthly:monthly,notes:r.notes||'',splits:splits}).then(function(r2){
+        if(r2&&r2.ok){ REV=r2; document.getElementById('revPlanMsg').textContent='Saved ✓'; renderRevenue(); }
+        else document.getElementById('revPlanMsg').textContent='Save failed'+(r2&&r2.detail?': '+r2.detail:'');
+      }).catch(function(e){ if(String(e&&e.message)==='admin_auth')return; document.getElementById('revPlanMsg').textContent='Save failed: '+e; });
+    });
+  }
 
   document.getElementById('loginBtn').addEventListener('click',submitLogin);
   document.getElementById('loginPass').addEventListener('keydown',function(e){ if(e.key==='Enter')submitLogin(); });

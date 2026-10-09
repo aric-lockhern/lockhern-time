@@ -1,0 +1,24 @@
+name: Tests
+
+# Runs the fast read-path unit + security suite on every push and PR. The suite uses only Node
+# built-ins (no network), so it needs no secrets. The Netlify build runs the same `npm test` as its
+# build command, so a failing test also blocks the deploy.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install dependencies
+        run: npm install
+      - name: Run tests
+        run: npm test

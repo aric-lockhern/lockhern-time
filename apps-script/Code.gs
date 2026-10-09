@@ -34,7 +34,12 @@ var DB = {
   TEAM: 'Team',
   ASSIGN: 'Assignments',
   ENTRIES: 'Entries',
-  SETTINGS: 'Settings'   // key | value — reminder config lives here
+  SETTINGS: 'Settings',   // key | value — reminder config lives here
+  // Account ownership + revenue (who manages which channel of a client, and the revenue that implies)
+  CHANNELS: 'Channels',   // id | name | active
+  REVENUE: 'Revenue',     // clientId | monthly | notes   (one row per client that has a retainer)
+  SPLIT: 'RevenueSplit',  // clientId | channelId | amount (dollars allocated to a channel)
+  OWNERS: 'ChannelOwners' // clientId | channelId | userId (explicit owner; empty ⇒ the client's assignees)
 };
 var DEFAULT_FT_HOURS = 40;
 var SUBMIT_MARKER = '__submitted__';   // sentinel clientId marking an explicit submission
@@ -106,6 +111,30 @@ function ensureEntriesSchema_(ss) {
   return sh;
 }
 
+// ---- Account ownership + revenue schema. Idempotent; seeds the starter channels once. ----
+function ensureTab_(ss, name, header) {
+  var sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold');
+  }
+  return sh;
+}
+function ensureRevenueTabs_(ss) {
+  if (!ss.getSheetByName(DB.CHANNELS)) {
+    var sh = ss.insertSheet(DB.CHANNELS);
+    sh.getRange(1, 1, 1, 3).setValues([['id', 'name', 'active']]).setFontWeight('bold');
+    sh.getRange(2, 1, 3, 3).setValues([
+      [Utilities.getUuid(), 'AI SEO', true],
+      [Utilities.getUuid(), 'Paid Search', true],
+      [Utilities.getUuid(), 'Meta', true]
+    ]);
+  }
+  ensureTab_(ss, DB.REVENUE, ['clientId', 'monthly', 'notes']);
+  ensureTab_(ss, DB.SPLIT, ['clientId', 'channelId', 'amount']);
+  ensureTab_(ss, DB.OWNERS, ['clientId', 'channelId', 'userId']);
+}
+
 // ---- one-time helper to set the secret from the editor ----
 function setSecret_() {
   PropertiesService.getScriptProperties().setProperty('API_SECRET', 'CHANGE_ME_to_a_long_random_string');
@@ -147,6 +176,16 @@ function doPost(e) {
   return handle_(e, body);
 }
 
+// Actions that change what the reads return. After one succeeds, the fast-loading
+// snapshot is refreshed at once (Publish.gs publishSoon_) so the Netlify read path
+// never serves data older than Apps Script would. A no-op when fast loading is off.
+var MUTATING_ACTIONS = {
+  empSave: 1, empSubmit: 1, empUnassign: 1,
+  addClient: 1, toggleClient: 1, addMember: 1, updateMember: 1, setAssignments: 1,
+  saveSettings: 1,
+  saveChannels: 1, saveClientRevenue: 1, saveChannelOwners: 1
+};
+
 function handle_(e, p) {
   // Auth
   var provided = String(p.key || '');
@@ -156,30 +195,45 @@ function handle_(e, p) {
   var action = String(p.action || '');
   try {
     ensureEntriesSchema_(SpreadsheetApp.getActive());
-    switch (action) {
-      case 'empLoad':   return json_(empLoad(p.slug, p.week || null));
-      case 'empList':   return json_(empList());
-      case 'empSave':   return json_(empSave(p.slug, p.week, p.days || {}, p.assign || []));
-      case 'empSubmit': return json_(empSubmit(p.slug, p.week, p.days || null, p.assign || []));
-      case 'empUnassign': return json_(empUnassign(p.slug, p.clientIds || (p.clientId ? [p.clientId] : [])));
-      case 'adminLoad': return json_(adminLoad());
-      case 'adminReport': return json_(adminReport(p.period, p.scope, p.userId));
-      case 'adminMatrix': return json_(adminMatrix(p.period, p.scope));
-      case 'adminMonths': return json_({ok: true, months: adminMonths()});
-      case 'adminStatus': return json_(adminSubmissionStatus(p.week));
-      case 'addClient': return json_(adminAddClient(p.name));
-      case 'toggleClient': return json_(adminToggleClient(p.id, p.active));
-      case 'addMember': return json_(adminAddMember(p.name, p.type, p.weeklyHours, p.email));
-      case 'updateMember': return json_(adminUpdateMember(p.id, p.patch || {}));
-      case 'setAssignments': return json_(adminSetAssignments(p.clientId, p.userIds || []));
-      case 'loadSettings': return json_({ok: true, settings: getSettings_()});
-      case 'saveSettings': return json_(adminSaveSettings(p.patch || {}));
-      case 'sendTest': return json_(adminSendTest(p.slug));
-      case 'sendWelcome': return json_(adminSendWelcome(p.slug));
-      default: return json_({ok: false, error: 'unknown_action', action: action});
+    var out = route_(action, p);
+    // Refresh the fast-loading snapshot after a successful write (runs after the
+    // action's own lock is released; safe no-op when fast loading isn't set up).
+    if (MUTATING_ACTIONS[action] && out && out.ok && typeof publishSoon_ === 'function') {
+      try { publishSoon_(); } catch (pe) { /* publishing must never fail the write */ }
     }
+    return json_(out);
   } catch (err) {
     return json_({ok: false, error: 'server_error', detail: String(err && err.message || err)});
+  }
+}
+
+// Returns the plain result object for an action (json_ is applied by handle_).
+function route_(action, p) {
+  switch (action) {
+    case 'empLoad':   return empLoad(p.slug, p.week || null);
+    case 'empList':   return empList();
+    case 'empSave':   return empSave(p.slug, p.week, p.days || {}, p.assign || []);
+    case 'empSubmit': return empSubmit(p.slug, p.week, p.days || null, p.assign || []);
+    case 'empUnassign': return empUnassign(p.slug, p.clientIds || (p.clientId ? [p.clientId] : []));
+    case 'adminLoad': return adminLoad();
+    case 'adminReport': return adminReport(p.period, p.scope, p.userId);
+    case 'adminMatrix': return adminMatrix(p.period, p.scope);
+    case 'adminMonths': return {ok: true, months: adminMonths()};
+    case 'adminStatus': return adminSubmissionStatus(p.week);
+    case 'addClient': return adminAddClient(p.name);
+    case 'toggleClient': return adminToggleClient(p.id, p.active);
+    case 'addMember': return adminAddMember(p.name, p.type, p.weeklyHours, p.email);
+    case 'updateMember': return adminUpdateMember(p.id, p.patch || {});
+    case 'setAssignments': return adminSetAssignments(p.clientId, p.userIds || []);
+    case 'loadSettings': return {ok: true, settings: getSettings_()};
+    case 'saveSettings': return adminSaveSettings(p.patch || {});
+    case 'sendTest': return adminSendTest(p.slug);
+    case 'sendWelcome': return adminSendWelcome(p.slug);
+    case 'adminRevenue': return adminRevenue();
+    case 'saveChannels': return adminSaveChannels(p.channels || []);
+    case 'saveClientRevenue': return adminSaveClientRevenue(p.clientId, p.monthly, p.notes, p.splits || {});
+    case 'saveChannelOwners': return adminSaveChannelOwners(p.clientId, p.channelId, p.userIds || []);
+    default: return {ok: false, error: 'unknown_action', action: action};
   }
 }
 
@@ -206,14 +260,26 @@ function empList() {
 
 function empLoad(slug, week) {
   var ss = SpreadsheetApp.getActive();
-  var user = teamBySlug_(ss, slug);
+  return empLoadFromRows_(rows_(ss, DB.ENTRIES), rows_(ss, DB.TEAM),
+    rows_(ss, DB.CLIENTS), rows_(ss, DB.ASSIGN), slug, week);
+}
+
+/** The body of empLoad, working from already-read rows. Pure (no sheet access), so the
+ *  publisher can rebuild every person's week from a single set of reads, while the live
+ *  empLoad above calls it the same way — the two can't drift. Behavior is identical to the
+ *  original empLoad: same user lookup (first active match), same assignment map, same shape. */
+function empLoadFromRows_(entryRows, teamRows, clientRows, assignRows, slug, week) {
+  var user = null;
+  for (var i = 0; i < teamRows.length; i++) {
+    if (teamRows[i].slug === slug && teamRows[i].active !== false) { user = teamRows[i]; break; }
+  }
   if (!user) return {ok: false, error: 'unknown_user'};
 
   var wk = week || fridayOf_(new Date());
-  var assignedIds = assignmentsFor_(ss, user.id);
-  var entryRows = rows_(ss, DB.ENTRIES);                     // read Entries ONCE per request
+  var assignedIds = {};
+  assignRows.forEach(function (a) { if (String(a.userId) === String(user.id)) assignedIds[String(a.clientId)] = true; });
   var hours = entriesForRows_(entryRows, user.id, wk);       // { clientId: { 'yyyy-mm-dd': hours } }
-  var allActive = rows_(ss, DB.CLIENTS).filter(function (c) { return c.active !== false; });
+  var allActive = clientRows.filter(function (c) { return c.active !== false; });
 
   // Show a client row if it's assigned to this user OR they've already logged time
   // against it this week (so a self-added client stays put mid-week).
@@ -833,6 +899,214 @@ function submissionStatusFromRows_(entryRows, team, week) {
       return {name: t.name, slug: t.slug, submitted: !!submittedAt[t.id], at: submittedAt[t.id] || ''};
     })
   };
+}
+
+// ============================================================
+//  ACCOUNT OWNERSHIP + REVENUE
+//  A client has a monthly retainer, split across service channels (AI SEO, Paid
+//  Search, Meta…). Each channel is owned by the person(s) who manage it — explicitly,
+//  or, until set, the client's timesheet assignees. A channel's dollars are shared
+//  evenly among its owners, which rolls up to "revenue managed" per person.
+// ============================================================
+function adminRevenue() {
+  var hit = cacheGet_('adminRevenue'); if (hit) return hit;
+  var ss = SpreadsheetApp.getActive();
+  ensureRevenueTabs_(ss);
+
+  var channelRows = rows_(ss, DB.CHANNELS);
+  var channels = channelRows.filter(function (c) { return c.active !== false; })
+    .map(function (c) { return {id: String(c.id), name: c.name}; });
+  var teamAll = rows_(ss, DB.TEAM);
+  var clientRows = rows_(ss, DB.CLIENTS);
+  var assignments = rows_(ss, DB.ASSIGN).map(function (a) { return {clientId: String(a.clientId), userId: String(a.userId)}; });
+
+  var revenue = {};
+  rows_(ss, DB.REVENUE).forEach(function (r) {
+    var c = String(r.clientId); if (!c) return;
+    revenue[c] = {monthly: Number(r.monthly || 0), notes: String(r.notes || ''), splits: {}};
+  });
+  rows_(ss, DB.SPLIT).forEach(function (r) {
+    var c = String(r.clientId); if (!c) return;
+    if (!revenue[c]) revenue[c] = {monthly: 0, notes: '', splits: {}};
+    revenue[c].splits[String(r.channelId)] = Number(r.amount || 0);
+  });
+  var owners = {};
+  rows_(ss, DB.OWNERS).forEach(function (r) {
+    var c = String(r.clientId), ch = String(r.channelId), u = String(r.userId);
+    if (!c || !ch || !u) return;
+    owners[c] = owners[c] || {};
+    (owners[c][ch] = owners[c][ch] || []).push(u);
+  });
+
+  var model = revenueModel_(channels, clientRows, teamAll, assignments, revenue, owners);
+  var activeClients = clientRows.filter(function (c) { return c.active !== false; })
+    .map(function (c) { return {id: String(c.id), name: c.name}; })
+    .sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+  var team = teamAll.filter(function (t) { return t.active !== false; })
+    .map(function (t) { return {id: String(t.id), name: t.name, type: t.type}; });
+
+  var res = {
+    ok: true,
+    channels: channels, clients: activeClients, team: team, assignments: assignments,
+    revenue: revenue, owners: owners,
+    byPerson: model.byPerson, byClient: model.byClient,
+    unassigned: model.unassigned, totals: model.totals
+  };
+  cachePut_('adminRevenue', res);
+  return res;
+}
+
+/**
+ * Pure rollup (no sheet access): attributes each client's per-channel dollars to the
+ * channel's owners (explicit, else the client's assignees), and sums per person.
+ * Only ACTIVE clients count. Inactive people who still own revenue are listed too.
+ */
+function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owners) {
+  var chName = {}; channels.forEach(function (c) { chName[c.id] = c.name; });
+  var clientName = {}, activeClient = {};
+  clientRows.forEach(function (c) { var id = String(c.id); clientName[id] = c.name; activeClient[id] = (c.active !== false); });
+
+  var assignees = {};
+  assignments.forEach(function (a) { (assignees[a.clientId] = assignees[a.clientId] || []).push(a.userId); });
+
+  var teamName = {}, activeId = {}, order = [];
+  teamAll.forEach(function (t) {
+    var id = String(t.id); teamName[id] = t.name;
+    if (t.active !== false) { activeId[id] = true; order.push(id); }
+  });
+
+  function effOwners(cid, chid) {
+    var o = owners[cid] && owners[cid][chid];
+    if (o && o.length) return o.slice();                 // explicit owners
+    return (assignees[cid] || []).slice();               // fall back to the client's assignees
+  }
+
+  var per = {};
+  function bucket(uid) { return per[uid] || (per[uid] = {total: 0, clients: {}}); }
+
+  var byClient = [], unassigned = 0;
+  Object.keys(revenue).forEach(function (cid) {
+    if (!activeClient[cid]) return;                      // only active clients are "managed"
+    var r = revenue[cid], monthly = Number(r.monthly || 0), allocated = 0, splitsOut = {};
+    channels.forEach(function (ch) {
+      var amt = Number((r.splits || {})[ch.id] || 0);
+      if (amt <= 0) return;
+      allocated += amt; splitsOut[ch.id] = round1_(amt);
+      var own = effOwners(cid, ch.id);
+      if (!own.length) { unassigned += amt; return; }    // a funded channel nobody owns
+      var share = amt / own.length;
+      own.forEach(function (uid) {
+        var b = bucket(uid); b.total += share;
+        var pc = b.clients[cid] || (b.clients[cid] = {total: 0, channels: {}});
+        pc.total += share; pc.channels[ch.id] = (pc.channels[ch.id] || 0) + share;
+      });
+    });
+    byClient.push({clientId: cid, name: clientName[cid] || cid, monthly: round1_(monthly),
+      allocated: round1_(allocated), unallocated: round1_(monthly - allocated), splits: splitsOut});
+  });
+
+  // People to list: active roster first, then any inactive person who still owns revenue.
+  Object.keys(per).forEach(function (uid) { if (!activeId[uid] && order.indexOf(uid) < 0) order.push(uid); });
+
+  var byPerson = order.map(function (uid) {
+    var b = per[uid] || {total: 0, clients: {}};
+    var clients = Object.keys(b.clients).map(function (cid) {
+      return {
+        clientId: cid, name: clientName[cid] || cid, total: round1_(b.clients[cid].total),
+        channels: Object.keys(b.clients[cid].channels).map(function (chid) {
+          return {channelId: chid, name: chName[chid] || chid, amount: round1_(b.clients[cid].channels[chid])};
+        })
+      };
+    }).sort(function (a, b2) { return b2.total - a.total || String(a.name).localeCompare(String(b2.name)); });
+    return {
+      id: uid, name: (teamName[uid] || uid) + (activeId[uid] ? '' : ' (inactive)'),
+      total: round1_(b.total), count: clients.length, clients: clients
+    };
+  }).sort(function (a, b2) { return b2.total - a.total || String(a.name).localeCompare(String(b2.name)); });
+
+  byClient.sort(function (a, b2) { return b2.monthly - a.monthly || String(a.name).localeCompare(String(b2.name)); });
+  var gMonthly = byClient.reduce(function (s, x) { return s + x.monthly; }, 0);
+  var gAllocated = byClient.reduce(function (s, x) { return s + x.allocated; }, 0);
+  return {
+    byPerson: byPerson, byClient: byClient, unassigned: round1_(unassigned),
+    totals: {monthly: round1_(gMonthly), allocated: round1_(gAllocated), attributed: round1_(gAllocated - unassigned)}
+  };
+}
+
+/** Save the channel list. list = [{id?, name, active}]; removed channels are kept inactive
+ *  so existing splits/owners aren't orphaned. */
+function adminSaveChannels(list) {
+  var ss = SpreadsheetApp.getActive();
+  ensureRevenueTabs_(ss);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var existing = rows_(ss, DB.CHANNELS);
+    var seen = {}, out = [['id', 'name', 'active']];
+    (list || []).forEach(function (c) {
+      var name = String(c.name || '').trim(); if (!name) return;
+      var id = c.id ? String(c.id) : Utilities.getUuid();
+      seen[id] = true;
+      out.push([id, name, c.active === false ? false : true]);
+    });
+    existing.forEach(function (e) { if (!seen[String(e.id)]) out.push([String(e.id), e.name, false]); });
+    var sh = ss.getSheetByName(DB.CHANNELS);
+    sh.clearContents();
+    sh.getRange(1, 1, out.length, 3).setValues(out);
+    bustCache_();
+    return adminRevenue();
+  } finally { lock.releaseLock(); }
+}
+
+/** Save a client's retainer + per-channel split. splits = { channelId: dollars }. */
+function adminSaveClientRevenue(clientId, monthly, notes, splits) {
+  var ss = SpreadsheetApp.getActive();
+  ensureRevenueTabs_(ss);
+  clientId = String(clientId || '');
+  if (!clientId) return {ok: false, error: 'no_client'};
+  var m = Number(monthly); if (isNaN(m) || m < 0) m = 0;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var rsh = ss.getSheetByName(DB.REVENUE), rdata = rsh.getDataRange().getValues(), found = false;
+    for (var r = 1; r < rdata.length; r++) {
+      if (String(rdata[r][0]) === clientId) { rsh.getRange(r + 1, 2).setValue(m); rsh.getRange(r + 1, 3).setValue(String(notes || '')); found = true; break; }
+    }
+    if (!found) rsh.appendRow([clientId, m, String(notes || '')]);
+
+    var ssh = ss.getSheetByName(DB.SPLIT), sdata = ssh.getDataRange().getValues();
+    var keep = [sdata[0] || ['clientId', 'channelId', 'amount']];
+    for (var i = 1; i < sdata.length; i++) { if (String(sdata[i][0]) !== clientId) keep.push(sdata[i]); }
+    Object.keys(splits || {}).forEach(function (chid) {
+      var amt = Number(splits[chid]); if (!isNaN(amt) && amt > 0) keep.push([clientId, String(chid), amt]);
+    });
+    ssh.clearContents();
+    ssh.getRange(1, 1, keep.length, 3).setValues(keep);
+    bustCache_();
+    return adminRevenue();
+  } finally { lock.releaseLock(); }
+}
+
+/** Set the explicit owners of one client-channel. Empty list ⇒ reverts to the client's assignees. */
+function adminSaveChannelOwners(clientId, channelId, userIds) {
+  var ss = SpreadsheetApp.getActive();
+  ensureRevenueTabs_(ss);
+  clientId = String(clientId || ''); channelId = String(channelId || '');
+  if (!clientId || !channelId) return {ok: false, error: 'bad_args'};
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = ss.getSheetByName(DB.OWNERS), data = sh.getDataRange().getValues();
+    var keep = [data[0] || ['clientId', 'channelId', 'userId']];
+    for (var i = 1; i < data.length; i++) {
+      if (!(String(data[i][0]) === clientId && String(data[i][1]) === channelId)) keep.push(data[i]);
+    }
+    (userIds || []).forEach(function (u) { u = String(u); if (u) keep.push([clientId, channelId, u]); });
+    sh.clearContents();
+    sh.getRange(1, 1, keep.length, 3).setValues(keep);
+    bustCache_();
+    return adminRevenue();
+  } finally { lock.releaseLock(); }
 }
 
 // ============================================================

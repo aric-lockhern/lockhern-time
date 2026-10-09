@@ -15,7 +15,8 @@
 var ADMIN_ACTIONS = {
   adminLoad: 1, adminReport: 1, adminMatrix: 1, adminMonths: 1, adminStatus: 1,
   addClient: 1, toggleClient: 1, addMember: 1, updateMember: 1, setAssignments: 1,
-  loadSettings: 1, saveSettings: 1, sendTest: 1, sendWelcome: 1
+  loadSettings: 1, saveSettings: 1, sendTest: 1, sendWelcome: 1,
+  adminRevenue: 1, saveChannels: 1, saveClientRevenue: 1, saveChannelOwners: 1
 };
 
 exports.handler = async function (event) {
