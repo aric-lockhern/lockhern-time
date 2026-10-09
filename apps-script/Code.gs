@@ -39,7 +39,9 @@ var DB = {
   CHANNELS: 'Channels',   // id | name | active
   REVENUE: 'Revenue',     // clientId | monthly | notes   (one row per client that has a retainer)
   SPLIT: 'RevenueSplit',  // clientId | channelId | amount (dollars allocated to a channel)
-  OWNERS: 'ChannelOwners' // clientId | channelId | userId (explicit owner; empty ⇒ the client's assignees)
+  OWNERS: 'ChannelOwners',// clientId | channelId | userId (explicit owner; empty ⇒ the client's assignees)
+  SKILLS: 'TeamSkills',   // userId | channelId  (a person's channel specialties)
+  PAY: 'TeamPay'          // userId | salary     (annual salary, for managed-revenue-vs-cost)
 };
 var DEFAULT_FT_HOURS = 40;
 var SUBMIT_MARKER = '__submitted__';   // sentinel clientId marking an explicit submission
@@ -133,6 +135,8 @@ function ensureRevenueTabs_(ss) {
   ensureTab_(ss, DB.REVENUE, ['clientId', 'monthly', 'notes']);
   ensureTab_(ss, DB.SPLIT, ['clientId', 'channelId', 'amount']);
   ensureTab_(ss, DB.OWNERS, ['clientId', 'channelId', 'userId']);
+  ensureTab_(ss, DB.SKILLS, ['userId', 'channelId']);
+  ensureTab_(ss, DB.PAY, ['userId', 'salary']);
 }
 
 // ---- one-time helper to set the secret from the editor ----
@@ -183,7 +187,8 @@ var MUTATING_ACTIONS = {
   empSave: 1, empSubmit: 1, empUnassign: 1,
   addClient: 1, toggleClient: 1, addMember: 1, updateMember: 1, setAssignments: 1,
   saveSettings: 1,
-  saveChannels: 1, saveClientRevenue: 1, saveChannelOwners: 1
+  saveChannels: 1, saveClientRevenue: 1, saveChannelOwners: 1,
+  saveTeamSkills: 1, saveSalary: 1
 };
 
 function handle_(e, p) {
@@ -233,6 +238,8 @@ function route_(action, p) {
     case 'saveChannels': return adminSaveChannels(p.channels || []);
     case 'saveClientRevenue': return adminSaveClientRevenue(p.clientId, p.monthly, p.notes, p.splits || {});
     case 'saveChannelOwners': return adminSaveChannelOwners(p.clientId, p.channelId, p.userIds || []);
+    case 'saveTeamSkills': return adminSaveTeamSkills(p.userId, p.channelIds || []);
+    case 'saveSalary': return adminSaveSalary(p.userId, p.salary);
     default: return {ok: false, error: 'unknown_action', action: action};
   }
 }
@@ -937,8 +944,19 @@ function adminRevenue() {
     owners[c] = owners[c] || {};
     (owners[c][ch] = owners[c][ch] || []).push(u);
   });
+  var skills = {};
+  rows_(ss, DB.SKILLS).forEach(function (r) {
+    var u = String(r.userId), ch = String(r.channelId);
+    if (!u || !ch) return;
+    (skills[u] = skills[u] || []).push(ch);
+  });
+  var salaries = {};
+  rows_(ss, DB.PAY).forEach(function (r) {
+    var u = String(r.userId); if (!u) return;
+    salaries[u] = Number(r.salary || 0) || 0;
+  });
 
-  var model = revenueModel_(channels, clientRows, teamAll, assignments, revenue, owners);
+  var model = revenueModel_(channels, clientRows, teamAll, assignments, revenue, owners, skills, salaries);
   var activeClients = clientRows.filter(function (c) { return c.active !== false; })
     .map(function (c) { return {id: String(c.id), name: c.name}; })
     .sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
@@ -948,7 +966,7 @@ function adminRevenue() {
   var res = {
     ok: true,
     channels: channels, clients: activeClients, team: team, assignments: assignments,
-    revenue: revenue, owners: owners,
+    revenue: revenue, owners: owners, skills: skills, salaries: salaries,
     byPerson: model.byPerson, byClient: model.byClient,
     unassigned: model.unassigned, totals: model.totals
   };
@@ -961,7 +979,8 @@ function adminRevenue() {
  * channel's owners (explicit, else the client's assignees), and sums per person.
  * Only ACTIVE clients count. Inactive people who still own revenue are listed too.
  */
-function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owners) {
+function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owners, skills, salaries) {
+  skills = skills || {}; salaries = salaries || {};
   var chName = {}; channels.forEach(function (c) { chName[c.id] = c.name; });
   var clientName = {}, activeClient = {};
   clientRows.forEach(function (c) { var id = String(c.id); clientName[id] = c.name; activeClient[id] = (c.active !== false); });
@@ -975,10 +994,15 @@ function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owne
     if (t.active !== false) { activeId[id] = true; order.push(id); }
   });
 
+  function hasSkill(uid, chid) { return (skills[uid] || []).indexOf(chid) >= 0; }
+  // Explicit owners win. Otherwise the client's assignees — but if any of them specializes in this
+  // channel, narrow to those specialists, so a channel's dollars land on the right person by default.
   function effOwners(cid, chid) {
     var o = owners[cid] && owners[cid][chid];
-    if (o && o.length) return o.slice();                 // explicit owners
-    return (assignees[cid] || []).slice();               // fall back to the client's assignees
+    if (o && o.length) return o.slice();
+    var assg = (assignees[cid] || []).slice();
+    var specialists = assg.filter(function (u) { return hasSkill(u, chid); });
+    return specialists.length ? specialists : assg;
   }
 
   var per = {};
@@ -1020,7 +1044,8 @@ function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owne
     }).sort(function (a, b2) { return b2.total - a.total || String(a.name).localeCompare(String(b2.name)); });
     return {
       id: uid, name: (teamName[uid] || uid) + (activeId[uid] ? '' : ' (inactive)'),
-      total: round1_(b.total), count: clients.length, clients: clients
+      total: round1_(b.total), count: clients.length, clients: clients,
+      salary: Number(salaries[uid] || 0) || 0
     };
   }).sort(function (a, b2) { return b2.total - a.total || String(a.name).localeCompare(String(b2.name)); });
 
@@ -1082,6 +1107,44 @@ function adminSaveClientRevenue(clientId, monthly, notes, splits) {
     });
     ssh.clearContents();
     ssh.getRange(1, 1, keep.length, 3).setValues(keep);
+    bustCache_();
+    return adminRevenue();
+  } finally { lock.releaseLock(); }
+}
+
+/** Replace one person's channel specialties. channelIds = [channelId, …]. */
+function adminSaveTeamSkills(userId, channelIds) {
+  var ss = SpreadsheetApp.getActive();
+  ensureRevenueTabs_(ss);
+  userId = String(userId || '');
+  if (!userId) return {ok: false, error: 'no_user'};
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = ss.getSheetByName(DB.SKILLS), data = sh.getDataRange().getValues();
+    var keep = [data[0] || ['userId', 'channelId']];
+    for (var i = 1; i < data.length; i++) { if (String(data[i][0]) !== userId) keep.push(data[i]); }
+    (channelIds || []).forEach(function (ch) { ch = String(ch); if (ch) keep.push([userId, ch]); });
+    sh.clearContents();
+    sh.getRange(1, 1, keep.length, 2).setValues(keep);
+    bustCache_();
+    return adminRevenue();
+  } finally { lock.releaseLock(); }
+}
+
+/** Set one person's annual salary (0/blank clears it). */
+function adminSaveSalary(userId, salary) {
+  var ss = SpreadsheetApp.getActive();
+  ensureRevenueTabs_(ss);
+  userId = String(userId || '');
+  if (!userId) return {ok: false, error: 'no_user'};
+  var s = Number(salary); if (isNaN(s) || s < 0) s = 0;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = ss.getSheetByName(DB.PAY), data = sh.getDataRange().getValues(), found = false;
+    for (var i = 1; i < data.length; i++) { if (String(data[i][0]) === userId) { sh.getRange(i + 1, 2).setValue(s); found = true; break; } }
+    if (!found) sh.appendRow([userId, s]);
     bustCache_();
     return adminRevenue();
   } finally { lock.releaseLock(); }
