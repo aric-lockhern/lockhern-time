@@ -296,3 +296,18 @@ test('revenue: bulk import sets retainers, and an unsplit remainder goes to the 
   assert.equal(c1.unallocated, 2000);
   assert.equal(r.revenue.c1.splits.ch_ps, 5000, 'import left the channel splits intact');
 });
+
+test('revenue: unchecking a client (inactive) removes it from every revenue view', async () => {
+  const w = await published();
+  const H = { 'x-admin-pass': ADMIN_PASSWORD };
+  let r = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.ok(r.clients.some((c) => c.id === 'c2') && r.byClient.some((c) => c.clientId === 'c2'));
+
+  w.g.doPost({ postData: { contents: JSON.stringify({ key: SECRET, action: 'toggleClient', id: 'c2', active: false }) } });
+  await w.flush();
+  r = (await w.fast({ action: 'adminRevenue' }, H)).body;
+  assert.ok(!r.clients.some((c) => c.id === 'c2'), 'gone from the setup list');
+  assert.ok(!r.byClient.some((c) => c.clientId === 'c2'), 'gone from byClient');
+  const m = {}; r.byPerson.forEach((p) => { m[p.name] = p.total; });
+  assert.equal(m.Cy || 0, 0, 'Cy only had c2 revenue → now 0');
+});
