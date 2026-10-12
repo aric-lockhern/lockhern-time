@@ -886,7 +886,7 @@
   function renderRevenue(){
     if(!REV) return;
     var t=REV.totals||{monthly:0,distributed:0,attributed:0,mismatches:0};
-    document.getElementById('revSummary').textContent=fmtMoney(t.distributed!=null?t.distributed:t.attributed)+' / mo to people'+(t.mismatches?('  ·  '+t.mismatches+' client(s) don’t balance'):'');
+    document.getElementById('revSummary').textContent=t.mismatches?(t.mismatches+' client(s) don’t balance'):'';
     if(REVVIEW==='person') renderRevPerson();
     else if(REVVIEW==='map') renderRevMap();
     else if(REVVIEW==='team') renderRevTeam();
@@ -925,8 +925,6 @@
       : '';
     document.getElementById('revPerson').innerHTML=
       '<div class="card"><div class="revkpi">'+
-        '<div><div class="n">'+fmtMoney(t.distributed)+'</div><div class="l">Managed / mo</div></div>'+
-        '<div><div class="n">'+fmtMoney(t.monthly)+'</div><div class="l">Total retainers / mo</div></div>'+
         '<div><div class="n">'+REV.byPerson.filter(function(p){return p.total>0;}).length+'</div><div class="l">People with revenue</div></div>'+
         (t.mismatches?'<div><div class="n"><span class="warnpill">'+t.mismatches+'</span></div><div class="l">Don’t balance</div></div>':'')+
       '</div></div>'+
