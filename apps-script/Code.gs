@@ -1051,23 +1051,18 @@ function revenueModel_(channels, clientRows, teamAll, assignments, revenue, owne
         distributed += amt; credit(uid, cid, 'fee', amt);
       });
     } else {
-      var allocated = 0;
       channels.forEach(function (ch) {
         var amt = Number((r.splits || {})[ch.id] || 0);
         if (amt <= 0) return;
-        allocated += amt; splitsOut[ch.id] = round1_(amt);
+        splitsOut[ch.id] = round1_(amt);
         var own = effOwners(cid, ch.id);
         if (!own.length) { unassigned += amt; return; }
         var share = amt / own.length;
         own.forEach(function (uid) { distributed += share; credit(uid, cid, ch.id, share); });
       });
-      // Any retainer beyond the channel splits goes evenly to the client's assignees.
-      var remainder = Math.max(0, monthly - allocated);
-      if (remainder > 0) {
-        var assg = (assignees[cid] || []);
-        if (!assg.length) { unassigned += remainder; }
-        else { var rshare = remainder / assg.length; assg.forEach(function (uid) { distributed += rshare; credit(uid, cid, '', rshare); }); }
-      }
+      // Only money explicitly split into channels is distributed. Any retainer beyond the channel
+      // splits stays UNdistributed and shows up as the QA gap below — it is never auto-credited to
+      // people, so "managed revenue" only ever reflects what you've actually assigned.
     }
     // The client "total" is its entered retainer, or the distribution if none is set. QA: the two
     // should match — mismatch is what's over/under-distributed.

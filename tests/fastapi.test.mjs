@@ -279,24 +279,24 @@ test('revenue: specialties pre-pick the channel owner, and salary shows per pers
   assert.equal(r.byPerson.find((p) => p.name === 'Aric').salary, 120000);
 });
 
-test('revenue: bulk import sets retainers, and an unsplit remainder goes to the client’s people', async () => {
+test('revenue: a retainer beyond what is explicitly distributed stays an undistributed QA gap', async () => {
   const w = await published();
   const H = { 'x-admin-pass': ADMIN_PASSWORD };
 
-  // Bump c1 to 12k via import; its 10k of channel splits stay, and the extra 2k is "unspecified" →
-  // split evenly across c1's assignees (u1 + u2). Import must not wipe splits.
+  // Bump c1's retainer to 12k; its channel splits still total 10k. The extra 2k is NOT auto-credited
+  // to anyone — it shows as the client's mismatch, and nobody's managed revenue changes.
   w.g.doPost({ postData: { contents: JSON.stringify({ key: SECRET, action: 'importRevenue', items: [{ clientId: 'c1', monthly: 12000 }] }) } });
   await w.flush();
   const r = (await w.fast({ action: 'adminRevenue' }, H)).body;
   assert.deepStrictEqual(r, plain(w.g.adminRevenue()));
   const m = {}; r.byPerson.forEach((p) => { m[p.name] = p.total; });
-  assert.equal(m.Aric, 7000, 'Aric: 6000 + half of the 2k remainder');
-  assert.equal(m.Bea, 8000, 'Bea: 7000 + half of the 2k remainder');
+  assert.equal(m.Aric, 6000, 'Aric unchanged: c1 ps 5000 + c1 seo 1000');
+  assert.equal(m.Bea, 7000, 'Bea unchanged: c1 seo 1000 + c1 meta 3000 + c2 ps 3000');
   assert.equal(m.Cy, 3000);
   const c1 = r.byClient.find((c) => c.clientId === 'c1');
   assert.equal(c1.monthly, 12000);
-  assert.equal(c1.distributed, 12000, 'the 2k remainder is distributed to assignees, so nothing is left over');
-  assert.equal(c1.mismatch, 0);
+  assert.equal(c1.distributed, 10000, 'only the 10k of channel splits is distributed');
+  assert.equal(c1.mismatch, 2000, 'the extra 2k is an undistributed gap, not credited to people');
   assert.equal(r.revenue.c1.splits.ch_ps, 5000, 'import left the channel splits intact');
 });
 
