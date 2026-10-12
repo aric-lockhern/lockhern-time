@@ -55,6 +55,8 @@
   table.rev th,table.rev td{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;}
   table.rev td.num,table.rev th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
   table.rev tr.person{cursor:pointer;} table.rev tr.person:hover td{background:#f4f7f5;}
+  table.rev th.sortable{cursor:pointer;user-select:none;white-space:nowrap;}
+  table.rev th.sortable:hover{color:var(--accent);}
   table.rev tr.detail td{background:#fafbfc;color:var(--muted);font-size:13px;}
   .revbar{height:8px;border-radius:99px;background:#eef1f4;overflow:hidden;min-width:90px;} .revbar>i{display:block;height:100%;background:var(--accent);}
   .mapscroll{overflow-x:auto;}
@@ -810,14 +812,28 @@
   //  views render from it; edits save through Apps Script and return a fresh snapshot.
   // ============================================================
   var REV=null, REVVIEW='person', revClient='', revLoaded=false;
-  var revPersonSort='rev', revSetupSort='rev', revSetupFilter='';
+  var revPersonSort='total', revPersonDir=-1, revSetupSort='rev', revSetupFilter='';
+  function revPersonVal(p,k){
+    if(k==='salary') return p.salary||0;
+    if(k==='mult') return p.salary>0?(p.total*12/p.salary):-1;
+    if(k==='count') return p.count||0;
+    return p.total||0;   // 'total'
+  }
   function revSortPeople(list){
-    var a=list.slice();
-    if(revPersonSort==='az') a.sort(function(x,y){return String(x.name).localeCompare(String(y.name));});
-    else if(revPersonSort==='salary') a.sort(function(x,y){return (y.salary||0)-(x.salary||0);});
-    else a.sort(function(x,y){return y.total-x.total;});
+    var k=revPersonSort, d=revPersonDir, a=list.slice();
+    a.sort(function(x,y){
+      if(k==='name') return d*String(x.name).localeCompare(String(y.name));
+      var dv=revPersonVal(x,k)-revPersonVal(y,k);
+      return dv ? d*dv : String(x.name).localeCompare(String(y.name));
+    });
     return a;
   }
+  function revPersonSortClick(k){
+    if(revPersonSort===k) revPersonDir=-revPersonDir;
+    else { revPersonSort=k; revPersonDir = (k==='name') ? 1 : -1; }   // names A→Z, numbers high→low
+    renderRevPerson();
+  }
+  function revSortArrow(k){ return revPersonSort===k ? (revPersonDir<0?' ▼':' ▲') : ''; }
   function fmtMoney(n){ return '$'+Math.round(Number(n)||0).toLocaleString(); }
   function revAssignees(cid){ return REV.assignments.filter(function(a){return String(a.clientId)===String(cid);}).map(function(a){return String(a.userId);}); }
   function revHasSkill(uid,chid){ return ((REV.skills||{})[String(uid)]||[]).indexOf(String(chid))>=0; }
@@ -929,15 +945,19 @@
         (t.mismatches?'<div><div class="n"><span class="warnpill">'+t.mismatches+'</span></div><div class="l">Don’t balance</div></div>':'')+
       '</div></div>'+
       '<div class="card"><h2>Managed revenue by person</h2>'+
-        '<div class="filters" style="margin-bottom:8px"><label>Sort <select id="revPersonSortSel">'+
-          '<option value="rev"'+(revPersonSort==='rev'?' selected':'')+'>Revenue</option>'+
-          '<option value="az"'+(revPersonSort==='az'?' selected':'')+'>A–Z</option>'+
-          '<option value="salary"'+(revPersonSort==='salary'?' selected':'')+'>Salary</option>'+
-        '</select></label><span class="sub"><b>×</b> = managed revenue annualized ÷ salary. Click a person for the breakdown.</span></div>'+
-        '<table class="rev"><thead><tr><th>Person</th><th class="num">Managed / mo</th><th class="num">Salary / yr</th><th class="num">× salary</th><th class="num">Clients</th><th>Share</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+        '<div class="sub" style="margin-bottom:8px">Click a column header to sort. <b>×</b> = managed revenue annualized ÷ salary. Click a person for the breakdown.</div>'+
+        '<table class="rev"><thead><tr>'+
+          '<th class="sortable" data-k="name">Person'+revSortArrow('name')+'</th>'+
+          '<th class="num sortable" data-k="total">Managed / mo'+revSortArrow('total')+'</th>'+
+          '<th class="num sortable" data-k="salary">Salary / yr'+revSortArrow('salary')+'</th>'+
+          '<th class="num sortable" data-k="mult">× salary'+revSortArrow('mult')+'</th>'+
+          '<th class="num sortable" data-k="count">Clients'+revSortArrow('count')+'</th>'+
+          '<th>Share</th></tr></thead><tbody>'+rows+'</tbody></table>'+
         (anySalary?'':'<div class="sub" style="margin-top:8px">Add salaries on the <b>Team &amp; specialties</b> tab to see the ×-salary multiple.</div>')+
       '</div>'+qa;
-    document.getElementById('revPersonSortSel').addEventListener('change',function(){ revPersonSort=this.value; renderRevPerson(); });
+    document.querySelectorAll('#revPerson th.sortable').forEach(function(th){
+      th.addEventListener('click',function(){ revPersonSortClick(th.getAttribute('data-k')); });
+    });
     document.querySelectorAll('#revPerson tr.person').forEach(function(tr){
       tr.addEventListener('click',function(){ var d=document.querySelector('#revPerson tr.detail[data-for="'+tr.getAttribute('data-id')+'"]'); if(d)d.style.display=(d.style.display==='none'?'table-row':'none'); });
     });
